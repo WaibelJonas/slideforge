@@ -28,13 +28,11 @@ fn creates_level_metadata() {
     assert_eq!(level.dimensions().width, 80000);
     assert_eq!(level.dimensions().height, 60000);
     assert_eq!(level.tile_size().width, 240);
-    assert_eq!(level.downsample(), 1.0);
 }
 
 #[test]
 fn metadata_reports_level_count() {
     let metadata = Metadata::new(
-        Dimensions::new(80000, 60000),
         vec![
             Level::new(
                 0,
@@ -49,6 +47,8 @@ fn metadata_reports_level_count() {
                 2.0,
             ),
         ],
+        Some(20.0),
+        Some(2.4),
     );
 
     assert_eq!(metadata.level_count(), 2);

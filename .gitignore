@@ -24,3 +24,6 @@ target
 # Added by cargo
 
 /target
+
+# Exclude example/testing WSI files due to size constraints
+*.svs 
