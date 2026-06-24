@@ -196,4 +196,9 @@ impl Metadata {
     pub fn microns_per_pixel(&self) -> Option<f64> {
         self.microns_per_pixel
     }
+
+    /// Returns the level at the specified index.
+    pub fn level(&self, index: usize) -> Option<&Level> {
+        self.levels.get(index)
+    }
 }
