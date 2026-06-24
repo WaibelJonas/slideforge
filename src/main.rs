@@ -1,10 +1,11 @@
-use slideforge::backend::svs;
-use std::error::Error;
 use std::path::Path;
 
-fn main() -> Result<(), Box<dyn Error>> {
+use slideforge::slide::Slide;
+
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("assets/TCGA-B9EB312E82F6.svs");
-    let metadata = svs::read_metadata(&path)?;
-    dbg!(metadata);
+    let slide = Slide::open(&path)?;
+    let tile = slide.read_tile(0, 0, 1)?;
+    dbg!(tile);
     Ok(())
 }

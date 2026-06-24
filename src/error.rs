@@ -8,9 +8,15 @@ pub enum WsiError {
     #[error("TIFF parsing error")]
     Tiff(#[from] tiff::TiffError),
 
-    #[error("unsupported file format")]
+    #[error("Unsupported file format")]
     UnsupportedFormat,
 
-    #[error("invalid slide metadata")]
+    #[error("Invalid slide metadata")]
     InvalidMetadata,
+
+    #[error("Tile index out of bounds")]
+    TileIndexOutOfBounds,
+
+    #[error("Level index out of bounds")]
+    LevelIndexOutOfBounds,
 }

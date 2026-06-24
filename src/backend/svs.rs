@@ -22,6 +22,7 @@ use std::path::Path;
 use tiff::decoder::Decoder;
 use tiff::tags::Tag;
 
+use crate::tile::TileDirectory;
 use crate::{Dimensions, Level, Metadata, TileSize, error::WsiError};
 
 /// Represents the different possible types of IFDs.
@@ -39,6 +40,11 @@ struct ParsedIfd {
     description: String,
     tile_size: Option<TileSize>,
     kind: ImageKind,
+}
+
+pub struct ParsedSlide {
+    pub metadata: Metadata,
+    pub tile_directories: Vec<TileDirectory>,
 }
 
 // Contains additional metadata attributes derived from Aperio images.
@@ -204,7 +210,7 @@ fn read_level(
 ///
 /// Returns [`WsiError`] if the file cannot be opened or the TIFF decoder
 /// cannot be initialized.
-fn get_decoder(path: &Path) -> Result<Decoder<BufReader<File>>, WsiError> {
+pub fn get_decoder(path: &Path) -> Result<Decoder<BufReader<File>>, WsiError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
 
@@ -279,4 +285,81 @@ pub fn read_metadata(path: &Path) -> Result<Metadata, WsiError> {
     }
 
     Ok(Metadata::new(levels, objective_power, microns_per_pixel))
+}
+
+pub fn parse_slide(
+    path: &Path,
+) -> Result<ParsedSlide, WsiError> {
+    let mut decoder = get_decoder(path)?;
+
+    let base_dimensions =
+        Dimensions::from_tuple(decoder.dimensions()?);
+
+    let mut levels = Vec::new();
+    let mut tile_directories = Vec::new();
+
+    let mut objective_power = None;
+    let mut microns_per_pixel = None;
+
+    loop {
+        let parsed_ifd = parse_ifd(&mut decoder)?;
+
+        // Parse Aperio metadata once.
+        if objective_power.is_none()
+            || microns_per_pixel.is_none()
+        {
+            let aperio =
+                parse_aperio_metadata(
+                    &parsed_ifd.description,
+                );
+
+            objective_power =
+                objective_power.or(
+                    aperio.objective_power,
+                );
+
+            microns_per_pixel =
+                microns_per_pixel.or(
+                    aperio.microns_per_pixel,
+                );
+        }
+
+        if parsed_ifd.kind == ImageKind::PyramidLevel {
+            let tile_size = parsed_ifd
+                .tile_size
+                .expect(
+                    "Pyramid levels must have tile metadata",
+                );
+
+            levels.push(read_level(
+                &mut decoder,
+                levels.len() as u32,
+                base_dimensions.width,
+                tile_size,
+            )?);
+
+            tile_directories.push(
+                TileDirectory::read_tile_directory(
+                    &mut decoder,
+                )?,
+            );
+        }
+
+        if !decoder.more_images() {
+            break;
+        }
+
+        decoder.next_image()?;
+    }
+
+    Ok(
+        ParsedSlide {
+            metadata: Metadata::new(
+                levels,
+                objective_power,
+                microns_per_pixel,
+            ),
+            tile_directories,
+        }
+    )
 }
