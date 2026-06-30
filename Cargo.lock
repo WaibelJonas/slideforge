@@ -420,6 +420,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "libjpeg-turbo-rs"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ba8f0363f4f6f520a33e98dbc2b3ed4281d3186b8a698cfa54453c5cd20bb26"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "log"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -791,6 +800,7 @@ name = "slideforge"
 version = "0.1.0"
 dependencies = [
  "image",
+ "libjpeg-turbo-rs",
  "thiserror",
  "tiff",
 ]
