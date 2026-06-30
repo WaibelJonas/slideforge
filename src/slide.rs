@@ -1,13 +1,10 @@
-/// Representation of a single Whole Slide Image (WSI) along with its metadata.
-use std::path::{Path, PathBuf};
-
-use image::DynamicImage;
-
 use crate::backend::svs::parse_slide;
 use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
 use crate::metadata::Metadata;
-use crate::tile::{TileDirectory, read_tile_bytes};
+use crate::tile::{Tile, TileDirectory, read_tile_bytes};
+/// Representation of a single Whole Slide Image (WSI) along with its metadata.
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 /// Represents a single WSI, along with its metadata.
@@ -71,7 +68,7 @@ impl Slide {
     ///
     /// # Errors
     /// Returns [`WsiError::LevelIndexOutOfBounds`] if the specified level index is invalid.
-    pub fn read_tile(
+    pub fn read_tile_raw(
         &self,
         level_idx: usize,
         tile_x: u32,
@@ -92,11 +89,11 @@ impl Slide {
         read_tile_bytes(&self.path, offset, byte_count)
     }
 
-    /// Reads the raw tile bytes at the specified level and coordinates and decodes them into a [`DynamicImage`].
+    /// Reads the raw tile bytes at the specified level and coordinates and decodes them into a [`Tile`].
     ///
     /// Given a level index and tile coordinates (tile_x, tile_y), this function
     /// retrieves the corresponding tile bytes from the WSI, decodes them and returns them in the form of
-    /// a loaded [`DynamicImage`]. This function should preferably be used over `read_tile`
+    /// a loaded [`Tile`]. This function should preferably be used over `read_tile`
     ///
     /// # Arguments
     /// * `level_idx` - The index of the pyramid level.
@@ -104,19 +101,19 @@ impl Slide {
     /// * `tile_y` - The y-coordinate of the tile.
     ///
     /// # Returns
-    /// A [`Result`] containing a [`DynamicImage`] representing the tile on success, or a [`WsiError`] on failure.
+    /// A [`Result`] containing a [`Tile`] representing the tile on success, or a [`WsiError`] on failure.
     ///
     /// # Errors
     /// Returns [`WsiError::LevelIndexOutOfBounds`] if the specified level index is invalid.
     pub fn decode_tile(
         &self,
-        level: usize,
+        level_idx: usize,
         tile_x: u32,
         tile_y: u32,
-    ) -> Result<DynamicImage, WsiError> {
+    ) -> Result<Tile, WsiError> {
         let level = self
             .metadata
-            .level(level)
+            .level(level_idx)
             .ok_or(WsiError::LevelIndexOutOfBounds)?;
 
         let directory = &self.tile_directories[level.level() as usize];
@@ -125,6 +122,64 @@ impl Slide {
         let (offset, byte_count) = directory.get_tile_location_by_coord(tile_x, tile_y, level)?;
 
         let tile = read_tile_bytes(&self.path, offset, byte_count)?;
-        JpegDecoder::decode(directory.jpeg_reader(&tile), color_transform)
+        let decoded_tile = JpegDecoder::decode(directory.jpeg_reader(&tile), color_transform)?;
+
+        Ok(Tile::new(decoded_tile, level_idx, tile_x, tile_y))
+    }
+
+    pub fn tile_coords(
+        &self,
+        level_idx: usize,
+    ) -> Result<impl Iterator<Item = (u32, u32)> + '_, WsiError> {
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+
+        let tiles_x = level.tiles_x();
+        let tiles_y = level.tiles_y();
+
+        Ok((0..tiles_y).flat_map(move |y| (0..tiles_x).map(move |x| (x, y))))
+    }
+
+    pub fn tiles(
+        &self,
+        level_idx: usize,
+    ) -> Result<impl Iterator<Item = Result<Tile, WsiError>> + '_, WsiError> {
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+
+        let tiles_x = level.tiles_x();
+        let tiles_y = level.tiles_y();
+
+        Ok((0..tiles_y)
+            .flat_map(move |y| (0..tiles_x).map(move |x| self.decode_tile(level_idx, x, y))))
+    }
+
+    pub fn extract<F>(&self, level_idx: usize, mut f: F) -> Result<(), WsiError>
+    where
+        F: FnMut(Tile) -> Result<(), WsiError>,
+    {
+        self.tiles(level_idx)?.try_for_each(|tile| {
+            let tile = tile?;
+            f(tile)
+        })
+    }
+
+    pub fn extract_to_dir(
+        &self,
+        level_idx: usize,
+        output: impl AsRef<Path>,
+    ) -> Result<(), WsiError> {
+        let output = output.as_ref();
+
+        std::fs::create_dir_all(output)?;
+
+        self.extract(level_idx, |tile| {
+            tile.save(output.join(format!("{}_{}.jpg", tile.tile_x(), tile.tile_y())))
+        })?;
+        Ok(())
     }
 }

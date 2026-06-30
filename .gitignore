@@ -27,3 +27,5 @@ target
 
 # Exclude example/testing WSI files due to size constraints
 *.svs 
+# Exclude assets folder
+assets/*

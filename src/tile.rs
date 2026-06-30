@@ -4,6 +4,7 @@
 //! compression metadata for all tiles within a tiled TIFF image. It also
 //! contains utilities for reading compressed tile data directly from disk.
 
+use image::DynamicImage;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -195,6 +196,47 @@ impl TileDirectory {
     /// Returns the total number of tiles in the directory.
     pub fn tile_count(&self) -> usize {
         self.offsets.len()
+    }
+}
+
+pub struct Tile {
+    image: DynamicImage,
+    level: usize,
+    tile_x: u32,
+    tile_y: u32,
+}
+
+impl Tile {
+    pub fn new(image: DynamicImage, level: usize, tile_x: u32, tile_y: u32) -> Tile {
+        Tile {
+            image,
+            level,
+            tile_x,
+            tile_y,
+        }
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), WsiError> {
+        Ok(self
+            .image
+            .save(path)
+            .map_err(|_| WsiError::UnsupportedFormat)?)
+    }
+
+    pub fn tile_x(&self) -> u32 {
+        self.tile_x
+    }
+
+    pub fn tile_y(&self) -> u32 {
+        self.tile_y
+    }
+
+    pub fn image(&self) -> &DynamicImage {
+        &self.image
+    }
+
+    pub fn level(&self) -> usize {
+        self.level
     }
 }
 
