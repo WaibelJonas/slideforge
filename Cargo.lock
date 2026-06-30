@@ -398,6 +398,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
+dependencies = [
+ "rayon",
+]
+
+[[package]]
 name = "lebe"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -417,15 +426,6 @@ checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
 dependencies = [
  "arbitrary",
  "cc",
-]
-
-[[package]]
-name = "libjpeg-turbo-rs"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ba8f0363f4f6f520a33e98dbc2b3ed4281d3186b8a698cfa54453c5cd20bb26"
-dependencies = [
- "thiserror",
 ]
 
 [[package]]
@@ -800,7 +800,7 @@ name = "slideforge"
 version = "0.1.0"
 dependencies = [
  "image",
- "libjpeg-turbo-rs",
+ "jpeg-decoder",
  "thiserror",
  "tiff",
 ]

@@ -5,7 +5,7 @@ use slideforge::slide::Slide;
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("assets/TCGA-B9EB312E82F6.svs");
     let slide = Slide::open(&path)?;
-    let tile = slide.read_tile(0, 0, 1)?;
-    dbg!(tile);
+    let decoded = slide.decode_tile(0, 0, 0)?;
+    decoded.save("assets/decoded.jpg");
     Ok(())
 }

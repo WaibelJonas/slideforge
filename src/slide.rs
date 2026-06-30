@@ -1,7 +1,10 @@
 /// Representation of a single Whole Slide Image (WSI) along with its metadata.
 use std::path::{Path, PathBuf};
 
+use image::DynamicImage;
+
 use crate::backend::svs::parse_slide;
+use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
 use crate::metadata::Metadata;
 use crate::tile::{TileDirectory, read_tile_bytes};
@@ -53,7 +56,7 @@ impl Slide {
         self.metadata.level_count()
     }
 
-    /// Reads and returns the tile at the specified level and coordinates.
+    /// Reads and returns the raw tile bytes at the specified level and coordinates.
     ///
     /// Given a level index and tile coordinates (tile_x, tile_y), this function
     /// retrieves the corresponding tile bytes from the WSI.
@@ -87,5 +90,41 @@ impl Slide {
         let (offset, byte_count) = directory.get_tile_location_by_coord(tile_x, tile_y, level)?;
 
         read_tile_bytes(&self.path, offset, byte_count)
+    }
+
+    /// Reads the raw tile bytes at the specified level and coordinates and decodes them into a [`DynamicImage`].
+    ///
+    /// Given a level index and tile coordinates (tile_x, tile_y), this function
+    /// retrieves the corresponding tile bytes from the WSI, decodes them and returns them in the form of
+    /// a loaded [`DynamicImage`]. This function should preferably be used over `read_tile`
+    ///
+    /// # Arguments
+    /// * `level_idx` - The index of the pyramid level.
+    /// * `tile_x` - The x-coordinate of the tile.
+    /// * `tile_y` - The y-coordinate of the tile.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`DynamicImage`] representing the tile on success, or a [`WsiError`] on failure.
+    ///
+    /// # Errors
+    /// Returns [`WsiError::LevelIndexOutOfBounds`] if the specified level index is invalid.
+    pub fn decode_tile(
+        &self,
+        level: usize,
+        tile_x: u32,
+        tile_y: u32,
+    ) -> Result<DynamicImage, WsiError> {
+        let level = self
+            .metadata
+            .level(level)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+
+        let directory = &self.tile_directories[level.level() as usize];
+        let color_transform = directory.photometric();
+
+        let (offset, byte_count) = directory.get_tile_location_by_coord(tile_x, tile_y, level)?;
+
+        let tile = read_tile_bytes(&self.path, offset, byte_count)?;
+        JpegDecoder::decode(directory.jpeg_reader(&tile), color_transform)
     }
 }
