@@ -29,3 +29,5 @@ target
 *.svs 
 # Exclude assets folder
 assets/*
+
+settings.json

@@ -19,4 +19,7 @@ pub enum WsiError {
 
     #[error("Level index out of bounds")]
     LevelIndexOutOfBounds,
+
+    #[error("failed to build thread pool")]
+    ThreadPool(#[from] rayon::ThreadPoolBuildError),
 }

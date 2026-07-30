@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use slideforge::ExtractionOptions;
 use slideforge::slide::Slide;
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -9,6 +10,6 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let dir_name = path.file_stem().unwrap();
     let dir_name = format!("assets/{}", dir_name.to_str().unwrap());
 
-    slide.extract_to_dir(0, dir_name)?;
+    slide.extract_to_dir(0, dir_name, &ExtractionOptions::parallel())?;
     Ok(())
 }
