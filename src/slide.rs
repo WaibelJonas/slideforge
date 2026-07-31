@@ -2,6 +2,8 @@ use crate::backend::svs::parse_slide;
 use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
 use crate::extraction::{ExtractionOptions, Parallelism};
+use crate::filter::{grayscale_histogram, otsu_threshold_from_histogram};
+use crate::logging::ExtractionStats;
 use crate::metadata::Metadata;
 use crate::tile::{Tile, TileDirectory, read_tile_bytes, read_tile_bytes_at};
 /// Representation of a single Whole Slide Image (WSI) along with its metadata.
@@ -10,6 +12,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Capacity of the buffer used for tile reads.
 ///
@@ -75,12 +78,12 @@ impl Slide {
     }
 
     /// Locates the tile directory entry for a given level and tile coordinate.
-    /// 
+    ///
     /// # Arguments
     /// * `level_idx` - The index of the pyramid level.
     /// * `tile_x` - The x-coordinate of the tile.
     /// * `tile_y` - The y-coordinate of the tile.
-    /// 
+    ///
     /// # Returns
     /// A [`Result`] containing a tuple of the tile directory, offset, and byte count on success, or a [`WsiError`] on failure.
     fn locate_tile(
@@ -153,7 +156,6 @@ impl Slide {
         tile_x: u32,
         tile_y: u32,
     ) -> Result<Tile, WsiError> {
-
         let (directory, offset, byte_count) = self.locate_tile(level_idx, tile_x, tile_y)?;
         let mut reader = self.reader.lock().expect("Mutex lock failed!");
 
@@ -172,12 +174,12 @@ impl Slide {
     /// retrieves the corresponding tile bytes from the WSI, decodes them and returns them in the form of
     /// a loaded [`Tile`]. This function should preferably be used over `read_tile`
     /// In contrast to `decode_tile`, this function is safe to call concurrently from multiple threads.
-    /// 
+    ///
     /// # Arguments
     /// * `level_idx` - The index of the pyramid level.
     /// * `tile_x` - The x-coordinate of the tile.
     /// * `tile_y` - The y-coordinate of the tile.
-    /// 
+    ///
     /// # Returns
     /// A [`Result`] containing a [`Tile`] representing the tile on success, or a
     /// [`WsiError`] on failure.
@@ -201,7 +203,7 @@ impl Slide {
     ///
     /// # Arguments
     /// * `level_idx` - The index of the pyramid level.
-    /// 
+    ///
     /// # Returns
     /// A [`Result`] containing an iterator over tile coordinates on success, or a [`WsiError`] on failure.
     pub fn tile_coords(
@@ -221,7 +223,6 @@ impl Slide {
 
     /// Decodes every tile at `level_idx` and passes each to `f`, according to
     /// `options`.
-    ///
     pub fn tiles(
         &self,
         level_idx: usize,
@@ -238,6 +239,31 @@ impl Slide {
             .flat_map(move |y| (0..tiles_x).map(move |x| self.decode_tile(level_idx, x, y))))
     }
 
+    /// Computes a single Otsu threshold for tissue/background separation
+    /// from the aggregated grayscale histogram of every tile at the
+    /// lowest-resolution pyramid level.
+    ///
+    /// Tiles are classified against this shared reference point instead of
+    /// each deriving its own threshold in isolation, which would let Otsu
+    /// invent a spurious tissue/background split on a tile that is
+    /// actually uniform background (or uniform tissue).
+    fn global_tissue_threshold(&self) -> Result<u8, WsiError> {
+        let level_idx = self.level_count() - 1;
+        let mut histogram = [0u32; 256];
+
+        for (x, y) in self.tile_coords(level_idx)? {
+            let tile = self.decode_tile(level_idx, x, y)?;
+            for (bin, count) in grayscale_histogram(&tile.image().to_luma8())
+                .iter()
+                .enumerate()
+            {
+                histogram[bin] += count;
+            }
+        }
+
+        Ok(otsu_threshold_from_histogram(&histogram))
+    }
+
     /// Decodes every tile at `level_idx` and passes each to `f`, according to
     /// `options`.
     ///
@@ -250,25 +276,61 @@ impl Slide {
     /// pool could not be built for [`Parallelism::Parallel`] with an
     /// explicit thread count.
     pub fn extract<F>(
-        &self, 
+        &self,
         level_idx: usize,
         options: &ExtractionOptions,
-        f: F
+        f: F,
     ) -> Result<(), WsiError>
     where
         F: Fn(Tile) -> Result<(), WsiError> + Sync,
     {
         let coords: Vec<(u32, u32)> = self.tile_coords(level_idx)?.collect();
+        let total_tiles = coords.len();
+        let dropped_tiles = AtomicUsize::new(0);
 
-        match options.parallelism {
+        // A single, shared threshold derived from the lowest-resolution
+        // level. Deriving a threshold per-tile instead would let Otsu
+        // invent a bogus tissue/background split on tiles that are
+        // actually uniform background.
+        let tissue_threshold = options
+            .min_tissue_fraction
+            .map(|_| self.global_tissue_threshold())
+            .transpose()?;
+
+        let process = |tile: Tile| -> Result<(), WsiError> {
+            if let (Some(min_fraction), Some(threshold)) =
+                (options.min_tissue_fraction, tissue_threshold)
+            {
+                let tissue_mask = tile.tissue_mask_with_threshold(threshold);
+                if !tissue_mask.has_more_than_min_tissue(min_fraction) {
+                    dropped_tiles.fetch_add(1, Ordering::Relaxed);
+                    if let Some(observer) = &options.observer {
+                        observer.on_tile_dropped(
+                            level_idx,
+                            tile.tile_x(),
+                            tile.tile_y(),
+                            tissue_mask.tissue_fraction(),
+                            min_fraction,
+                        );
+                    }
+                    return Ok(());
+                }
+            }
+            if let Some(observer) = &options.observer {
+                observer.on_tile_extraction(level_idx, tile.tile_x(), tile.tile_y());
+            }
+            f(tile)
+        };
+
+        let result = match options.parallelism {
             Parallelism::Sequential => coords
                 .into_iter()
-                .try_for_each(|(x, y)| f(self.decode_tile(level_idx, x, y)?)),
+                .try_for_each(|(x, y)| process(self.decode_tile(level_idx, x, y)?)),
             Parallelism::Parallel(threads) => {
                 let run = || {
-                    coords
-                        .into_par_iter()
-                        .try_for_each(|(x, y)| f(self.decode_tile_concurrent(level_idx, x, y)?))
+                    coords.into_par_iter().try_for_each(|(x, y)| {
+                        process(self.decode_tile_concurrent(level_idx, x, y)?)
+                    })
                 };
 
                 match threads {
@@ -279,11 +341,26 @@ impl Slide {
                     None => run(),
                 }
             }
+        };
+
+        if options.min_tissue_fraction.is_some() {
+            if let Some(observer) = &options.observer {
+                observer.on_extraction_complete(
+                    level_idx,
+                    ExtractionStats {
+                        total: total_tiles,
+                        dropped: dropped_tiles.load(Ordering::Relaxed),
+                    },
+                );
+            }
         }
+
+        result
     }
 
     /// Extracts every tile at `level_idx` into `output` as `{tile_x}_{tile_y}.jpg`,
     /// according to `options`.
+    /// TODO | Extraction to a directory should be rolled into ExtractionOptions
     pub fn extract_to_dir(
         &self,
         level_idx: usize,

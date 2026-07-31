@@ -14,6 +14,7 @@ use tiff::tags::Tag;
 
 use crate::Level;
 use crate::error::WsiError;
+use crate::filter::TissueMask;
 
 /// photometric interpretation.
 ///
@@ -237,6 +238,22 @@ impl Tile {
 
     pub fn level(&self) -> usize {
         self.level
+    }
+
+    /// Computes the Otsu-derived tissue/background classification for this
+    /// tile's image, deriving the threshold from this tile alone.
+    ///
+    /// Prefer [`Tile::tissue_mask_with_threshold`] when classifying many
+    /// tiles from the same slide (see [`TissueMask::compute`]).
+    pub fn tissue_mask(&self) -> TissueMask {
+        TissueMask::compute(&self.image)
+    }
+
+    /// Computes the tissue/background classification for this tile's image
+    /// using an externally-supplied Otsu threshold, rather than deriving
+    /// one from this tile alone.
+    pub fn tissue_mask_with_threshold(&self, threshold: u8) -> TissueMask {
+        TissueMask::compute_with_threshold(&self.image, threshold)
     }
 }
 
