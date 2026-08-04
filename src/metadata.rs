@@ -138,6 +138,30 @@ impl Level {
     pub fn downsample_factor(&self) -> f64 {
         self.downsample_factor
     }
+
+    /// Returns the valid (non-padding) width and height of the tile at
+    /// (`tile_x`, `tile_y`) in this level.
+    ///
+    /// Tiled image formats store tiles at a fixed size, so the last row
+    /// and column of tiles in a level commonly extend past the level's
+    /// real dimensions; the excess is stored as padding. This returns the
+    /// portion of the tile's stored image data that corresponds to actual
+    /// image content, which is always `<= tile_size` and smaller than
+    /// `tile_size` only for boundary tiles.
+    pub fn valid_tile_dimensions(&self, tile_x: u32, tile_y: u32) -> (u32, u32) {
+        let valid_width = self
+            .dimensions
+            .width
+            .saturating_sub(tile_x * self.tile_size.width)
+            .min(self.tile_size.width);
+        let valid_height = self
+            .dimensions
+            .height
+            .saturating_sub(tile_y * self.tile_size.height)
+            .min(self.tile_size.height);
+
+        (valid_width, valid_height)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

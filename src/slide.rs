@@ -2,12 +2,14 @@ use crate::backend::svs::parse_slide;
 use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
 use crate::extraction::{ExtractionOptions, Parallelism};
-use crate::filter::{grayscale_histogram, otsu_threshold_from_histogram};
+use crate::filter::{TissueMask, grayscale_histogram, otsu_threshold_from_histogram};
 use crate::logging::ExtractionStats;
 use crate::metadata::Metadata;
 use crate::tile::{Tile, TileDirectory, read_tile_bytes, read_tile_bytes_at};
+use image::DynamicImage;
 /// Representation of a single Whole Slide Image (WSI) along with its metadata.
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -239,6 +241,31 @@ impl Slide {
             .flat_map(move |y| (0..tiles_x).map(move |x| self.decode_tile(level_idx, x, y))))
     }
 
+    fn cropped_image<'a>(
+        &self,
+        level_idx: usize,
+        tile: &'a Tile,
+    ) -> Result<Cow<'a, DynamicImage>, WsiError> {
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+        let tile_size = level.tile_size();
+        let (valid_width, valid_height) = level.valid_tile_dimensions(tile.tile_x(), tile.tile_y());
+
+        // Check whether tile exceeds the valid dimensions of whether it got padded
+        if valid_width == tile_size.width && valid_height == tile_size.height {
+            Ok(Cow::Borrowed(tile.image()))
+        } else {
+            Ok(Cow::Owned(tile.image().crop_imm(
+                0,
+                0,
+                valid_width,
+                valid_height,
+            )))
+        }
+    }
+
     /// Computes a single Otsu threshold for tissue/background separation
     /// from the aggregated grayscale histogram of every tile at the
     /// lowest-resolution pyramid level.
@@ -253,10 +280,8 @@ impl Slide {
 
         for (x, y) in self.tile_coords(level_idx)? {
             let tile = self.decode_tile(level_idx, x, y)?;
-            for (bin, count) in grayscale_histogram(&tile.image().to_luma8())
-                .iter()
-                .enumerate()
-            {
+            let cropped = self.cropped_image(level_idx, &tile)?;
+            for (bin, count) in grayscale_histogram(&cropped.to_luma8()).iter().enumerate() {
                 histogram[bin] += count;
             }
         }
@@ -301,7 +326,8 @@ impl Slide {
             if let (Some(min_fraction), Some(threshold)) =
                 (options.min_tissue_fraction, tissue_threshold)
             {
-                let tissue_mask = tile.tissue_mask_with_threshold(threshold);
+                let cropped = self.cropped_image(level_idx, &tile)?;
+                let tissue_mask = TissueMask::compute_with_threshold(&cropped, threshold);
                 if !tissue_mask.has_more_than_min_tissue(min_fraction) {
                     dropped_tiles.fetch_add(1, Ordering::Relaxed);
                     if let Some(observer) = &options.observer {
