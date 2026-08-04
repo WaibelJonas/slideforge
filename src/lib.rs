@@ -6,9 +6,11 @@ pub mod filter;
 pub mod logging;
 pub mod metadata;
 pub mod slide;
+pub mod stain;
 pub mod tile;
 
 pub use extraction::{ExtractionOptions, Parallelism};
 pub use filter::TissueMask;
-pub use logging::{ExtractionObserver, ExtractionStats, SimpleLogging};
+pub use logging::{ExtractionObserver, ExtractionStats, ProgressBar, SimpleLogging};
 pub use metadata::{Dimensions, Level, Metadata, TileSize};
+pub use stain::normalize_reinhard;

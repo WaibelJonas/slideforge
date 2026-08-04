@@ -313,6 +313,10 @@ impl Slide {
         let total_tiles = coords.len();
         let dropped_tiles = AtomicUsize::new(0);
 
+        if let Some(observer) = &options.observer {
+            observer.on_extraction_start(level_idx, total_tiles);
+        }
+
         // A single, shared threshold derived from the lowest-resolution
         // level. Deriving a threshold per-tile instead would let Otsu
         // invent a bogus tissue/background split on tiles that are
@@ -345,6 +349,11 @@ impl Slide {
             if let Some(observer) = &options.observer {
                 observer.on_tile_extraction(level_idx, tile.tile_x(), tile.tile_y());
             }
+            let tile = if options.normalize_stain {
+                tile.normalize_stain()
+            } else {
+                tile
+            };
             f(tile)
         };
 

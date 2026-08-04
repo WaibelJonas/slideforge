@@ -14,9 +14,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let mut extraction_options = ExtractionOptions::parallel();
     extraction_options = extraction_options
-        .with_min_tissue_fraction(0.05)
-        .with_logging();
+        .with_min_tissue_fraction(0.1)
+        .with_progress_bar();
 
-    slide.extract_to_dir(2, dir_name, &extraction_options)?;
+    slide.extract_to_dir(1, dir_name, &extraction_options)?;
     Ok(())
 }

@@ -255,6 +255,18 @@ impl Tile {
     pub fn tissue_mask_with_threshold(&self, threshold: u8) -> TissueMask {
         TissueMask::compute_with_threshold(&self.image, threshold)
     }
+
+    /// Returns a copy of this tile with its color statistics normalized
+    /// toward a fixed target via Reinhard's method (see
+    /// [`crate::stain::normalize_reinhard`]).
+    pub fn normalize_stain(&self) -> Tile {
+        Tile::new(
+            crate::stain::normalize_reinhard(&self.image),
+            self.level,
+            self.tile_x,
+            self.tile_y,
+        )
+    }
 }
 
 /// Helper function to read a list of u64 values from a TIFF tag value.

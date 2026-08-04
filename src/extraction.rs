@@ -39,6 +39,9 @@ pub struct ExtractionOptions {
     /// Receives tissue-filter events during extraction. `None` (the
     /// default) means no events are reported anywhere.
     pub observer: Option<Arc<dyn ExtractionObserver>>,
+    /// Whether to apply Reinhard stain normalization to kept tiles before
+    /// they reach the extraction callback. Disabled (`false`) by default.
+    pub normalize_stain: bool,
 }
 
 impl fmt::Debug for ExtractionOptions {
@@ -58,6 +61,7 @@ impl ExtractionOptions {
             parallelism: Parallelism::Sequential,
             min_tissue_fraction: None,
             observer: None,
+            normalize_stain: false,
         }
     }
 
@@ -67,6 +71,7 @@ impl ExtractionOptions {
             parallelism: Parallelism::Parallel(None),
             min_tissue_fraction: None,
             observer: None,
+            normalize_stain: false,
         }
     }
 
@@ -80,6 +85,7 @@ impl ExtractionOptions {
             parallelism: Parallelism::Parallel(Some(threads)),
             min_tissue_fraction: None,
             observer: None,
+            normalize_stain: false,
         }
     }
 
@@ -107,5 +113,19 @@ impl ExtractionOptions {
     /// i.e. via the `log` crate.
     pub fn with_logging(self) -> Self {
         self.with_observer(crate::logging::SimpleLogging)
+    }
+
+    /// Reports extraction progress through a
+    /// [`ProgressBar`](crate::logging::ProgressBar), i.e. a
+    /// rudimentary text progress bar printed to stderr.
+    pub fn with_progress_bar(self) -> Self {
+        self.with_observer(crate::logging::ProgressBar::new())
+    }
+
+    /// Applies Reinhard stain normalization to kept tiles before they reach
+    /// the extraction callback.
+    pub fn with_stain_normalization(mut self) -> Self {
+        self.normalize_stain = true;
+        self
     }
 }

@@ -26,8 +26,11 @@ target
 /target
 
 # Exclude example/testing WSI files due to size constraints
-*.svs 
+*.svs
 # Exclude assets folder
 assets/*
+# ...except the bundled stain-normalization reference tile, which is
+# include_bytes!()'d at compile time and must be tracked for the crate to build.
+!assets/reference_tile.jpg
 
 settings.json
