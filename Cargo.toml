@@ -8,6 +8,7 @@ env_logger = "0.11.11"
 image = "0.25.10"
 jpeg-decoder = "0.3.2"
 log = "0.4.28"
+printpdf = { version = "0.12.5", default-features = false, features = ["images"] }
 rayon = "1.12.0"
 thiserror = "2.0.19"
 tiff = "0.11.3"
