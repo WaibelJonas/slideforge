@@ -3,18 +3,20 @@ use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
 use crate::extraction::{ExtractionOptions, Parallelism};
 use crate::filter::{TissueMask, grayscale_histogram, otsu_threshold_from_histogram};
-use crate::logging::ExtractionStats;
+use crate::logging::{DualObserver, ExtractionObserver, ExtractionStats, ReportCollector};
 use crate::metadata::Metadata;
+use crate::report::{self, ExtractionReport};
 use crate::tile::{Tile, TileDirectory, read_tile_bytes, read_tile_bytes_at};
-use image::DynamicImage;
+use image::{DynamicImage, RgbImage};
 /// Representation of a single Whole Slide Image (WSI) along with its metadata.
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// Capacity of the buffer used for tile reads.
 ///
@@ -407,6 +409,129 @@ impl Slide {
         std::fs::create_dir_all(output)?;
 
         self.extract(level_idx, options, |tile| {
+            tile.save(output.join(format!("{}_{}.jpg", tile.tile_x(), tile.tile_y())))
+        })
+    }
+
+    /// Stitches lowest-resolution pyramid level into a single image for use as a thumbnail.
+    pub(crate) fn build_overview_image(&self) -> Result<DynamicImage, WsiError> {
+        let level_idx = self.level_count() - 1;
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+
+        let dimensions = level.dimensions();
+        let mut canvas = RgbImage::new(dimensions.width, dimensions.height);
+
+        for (x, y) in self.tile_coords(level_idx)? {
+            let tile = self.decode_tile(level_idx, x, y)?;
+            let cropped = self.cropped_image(level_idx, &tile)?;
+            let cropped_rgb = cropped.to_rgb8();
+
+            let origin_x = x * level.tile_size().width;
+            let origin_y = y * level.tile_size().height;
+
+            for (px, py, pixel) in cropped_rgb.enumerate_pixels() {
+                canvas.put_pixel(origin_x + px, origin_y + py, *pixel);
+            }
+        }
+
+        let overview = DynamicImage::ImageRgb8(canvas);
+        let max_dim = overview.width().max(overview.height());
+
+        Ok(if max_dim > report::OVERVIEW_MAX_PX {
+            overview.thumbnail(report::OVERVIEW_MAX_PX, report::OVERVIEW_MAX_PX)
+        } else {
+            overview
+        })
+    }
+
+    /// Extracts every tile at `level_idx` into `output` as `{tile_x}_{tile_y}.jpg`,
+    /// according to `options`. Generates a pdf report summarizing the extraction prcess.
+    /// TODO | Extraction with report should be rolled into ExtractionOptions
+    pub fn extract_with_report<F>(
+        &self,
+        level_idx: usize,
+        options: &ExtractionOptions,
+        f: F,
+    ) -> Result<ExtractionReport, WsiError>
+    where
+        F: Fn(Tile) -> Result<(), WsiError> + Sync,
+    {
+        let collector = Arc::new(ReportCollector::new());
+
+        // Override and add a ReportCollector to the existing observer
+        let mut report_options = options.clone();
+        report_options.observer = Some(match &options.observer {
+            Some(existing) => Arc::new(DualObserver(existing.clone(), collector.clone()))
+                as Arc<dyn ExtractionObserver>,
+            None => collector.clone() as Arc<dyn ExtractionObserver>,
+        });
+
+        let samples: Mutex<Vec<(u32, u32, DynamicImage)>> = Mutex::new(Vec::new());
+        let seen = AtomicUsize::new(0);
+        let stride = AtomicUsize::new(1);
+
+        let start = Instant::now();
+        self.extract(level_idx, &report_options, |tile| {
+            let idx = seen.fetch_add(1, Ordering::Relaxed);
+
+            if idx % stride.load(Ordering::Relaxed) == 0 {
+                let mut samples = samples.lock().expect("Mutex lock failed!");
+                let thumbnail = tile
+                    .image()
+                    .thumbnail(report::SAMPLE_TILE_PX, report::SAMPLE_TILE_PX);
+                samples.push((tile.tile_x(), tile.tile_y(), thumbnail));
+
+                if samples.len() > 2 * report::MAX_SAMPLE_TILES {
+                    let thinned = samples.drain(..).step_by(2).collect();
+                    *samples = thinned;
+                    // Only ever mutated here, while holding `samples`'
+                    // lock, so this load-then-store can't race with
+                    // itself even though it isn't a single atomic op.
+                    stride.store(stride.load(Ordering::Relaxed) * 2, Ordering::Relaxed);
+                }
+            }
+
+            f(tile)
+        })?;
+        let elapsed = start.elapsed();
+
+        let mut samples = samples.into_inner().expect("Mutex lock failed!");
+        if samples.len() > report::MAX_SAMPLE_TILES {
+            let step = samples.len().div_ceil(report::MAX_SAMPLE_TILES);
+            samples = samples.into_iter().step_by(step).collect();
+        }
+
+        Ok(ExtractionReport::new(
+            level_idx,
+            collector.total(),
+            collector.kept(),
+            collector.dropped(),
+            elapsed,
+            options,
+            collector.tile_positions(),
+            collector.dropped_tissue_fractions(),
+            samples,
+        ))
+    }
+
+    /// Extracts every tile at `level_idx` into `output` as
+    /// `{tile_x}_{tile_y}.jpg`, according to `options`, and returns an
+    /// [`ExtractionReport`] summarizing the run (see
+    /// [`Slide::extract_with_report`]).
+    pub fn extract_to_dir_with_report(
+        &self,
+        level_idx: usize,
+        output: impl AsRef<Path>,
+        options: &ExtractionOptions,
+    ) -> Result<ExtractionReport, WsiError> {
+        let output = output.as_ref();
+
+        std::fs::create_dir_all(output)?;
+
+        self.extract_with_report(level_idx, options, |tile| {
             tile.save(output.join(format!("{}_{}.jpg", tile.tile_x(), tile.tile_y())))
         })
     }
