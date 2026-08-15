@@ -3,9 +3,17 @@
 //! The public struct [`ExtractionObserver`] constitutes logging functions
 //! for all tissue-filter decisions and is to be implemented by any new Observer.
 //! ['SimpleLogging'] implements basic log messages.
+use std::fmt;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use image::DynamicImage;
+
+use crate::extraction::ExtractionOptions;
+use crate::report::{self, ExtractionReport};
+use crate::tile::Tile;
 
 // Progress bar width
 const BAR_WIDTH: usize = 40;
@@ -49,7 +57,7 @@ pub trait ExtractionObserver: Send + Sync {
     fn on_extraction_complete(&self, _level_idx: usize, _stats: ExtractionStats) {}
 
     /// Called for every extracted tile
-    fn on_tile_extraction(&self, _level_idx: usize, _tile_x: u32, _tile_y: u32) {}
+    fn on_tile_extraction(&self, _level_idx: usize, _tile: &Tile) {}
 }
 
 /// An [`ExtractionObserver`] that reports events through the `log` crate.
@@ -85,8 +93,12 @@ impl ExtractionObserver for SimpleLogging {
         );
     }
 
-    fn on_tile_extraction(&self, level_idx: usize, tile_x: u32, tile_y: u32) {
-        log::info!("extract: processed tile ({tile_x}, {tile_y}) at level {level_idx}");
+    fn on_tile_extraction(&self, level_idx: usize, tile: &Tile) {
+        log::info!(
+            "extract: processed tile ({}, {}) at level {level_idx}",
+            tile.tile_x(),
+            tile.tile_y()
+        );
     }
 }
 
@@ -151,28 +163,67 @@ impl ExtractionObserver for ProgressBar {
         self.render();
     }
 
-    fn on_tile_extraction(&self, _level_idx: usize, _tile_x: u32, _tile_y: u32) {
+    fn on_tile_extraction(&self, _level_idx: usize, _tile: &Tile) {
         self.processed.fetch_add(1, Ordering::Relaxed);
         self.render();
     }
 }
 
 /// An [`ExtractionObserver`] that collects summary counts, per-tile
-/// keep/drop positions and dropped-tile tissue fractions for building an
-/// extraction report.
-#[derive(Debug, Default)]
-pub(crate) struct ReportCollector {
+/// keep/drop positions, dropped-tile tissue fractions, timing and a
+/// handful of example tile thumbnails, for building an
+/// [`ExtractionReport`](crate::report::ExtractionReport) via [`ReportCollector::report`].
+///
+/// Typically shared between the extraction call and the caller via `Arc`
+/// (e.g. `ExtractionOptions::with_shared_observer`), so its methods take
+/// `&self` throughout rather than consuming it.
+pub struct ReportCollector {
+    level_idx: AtomicUsize,
     total: AtomicUsize,
     kept: AtomicUsize,
     dropped: AtomicUsize,
+    start: Mutex<Option<Instant>>,
     // (tile_x, tile_y, kept)
     positions: Mutex<Vec<(u32, u32, bool)>>,
     dropped_tissue_fractions: Mutex<Vec<f32>>,
+    // (tile_x, tile_y, thumbnail)
+    samples: Mutex<Vec<(u32, u32, DynamicImage)>>,
+    tiles_seen: AtomicUsize,
+    sample_stride: AtomicUsize,
+}
+
+impl fmt::Debug for ReportCollector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReportCollector")
+            .field("total", &self.total())
+            .field("kept", &self.kept())
+            .field("dropped", &self.dropped())
+            .finish()
+    }
+}
+
+impl Default for ReportCollector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReportCollector {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub fn new() -> Self {
+        Self {
+            level_idx: AtomicUsize::new(0),
+            total: AtomicUsize::new(0),
+            kept: AtomicUsize::new(0),
+            dropped: AtomicUsize::new(0),
+            start: Mutex::new(None),
+            positions: Mutex::new(Vec::new()),
+            dropped_tissue_fractions: Mutex::new(Vec::new()),
+            samples: Mutex::new(Vec::new()),
+            tiles_seen: AtomicUsize::new(0),
+            // Sampling stride for `on_tile_extraction`'s reservoir-style
+            // thinning below; must start at 1 (every tile) rather than 0.
+            sample_stride: AtomicUsize::new(1),
+        }
     }
 
     pub(crate) fn total(&self) -> usize {
@@ -197,11 +248,49 @@ impl ReportCollector {
             .expect("Mutex lock failed!")
             .clone()
     }
+
+    /// Snapshots everything collected so far into an [`ExtractionReport`].
+    ///
+    /// `options` is used only for its pipeline-configuration fields
+    /// (parallelism, tissue-fraction threshold, stain normalization) — pass
+    /// the same [`ExtractionOptions`] the extraction was run with.
+    ///
+    /// Takes `&self` rather than consuming: this collector is normally
+    /// shared via `Arc` with the extraction call itself, so there's no
+    /// single owner to consume from by the time extraction finishes.
+    pub fn report(&self, options: &ExtractionOptions) -> ExtractionReport {
+        let elapsed = self
+            .start
+            .lock()
+            .expect("Mutex lock failed!")
+            .map(|start| start.elapsed())
+            .unwrap_or_default();
+
+        let mut samples = self.samples.lock().expect("Mutex lock failed!").clone();
+        if samples.len() > report::MAX_SAMPLE_TILES {
+            let step = samples.len().div_ceil(report::MAX_SAMPLE_TILES);
+            samples = samples.into_iter().step_by(step).collect();
+        }
+
+        ExtractionReport::new(
+            self.level_idx.load(Ordering::Relaxed),
+            self.total(),
+            self.kept(),
+            self.dropped(),
+            elapsed,
+            options,
+            self.tile_positions(),
+            self.dropped_tissue_fractions(),
+            samples,
+        )
+    }
 }
 
 impl ExtractionObserver for ReportCollector {
-    fn on_extraction_start(&self, _level_idx: usize, total_tiles: usize) {
+    fn on_extraction_start(&self, level_idx: usize, total_tiles: usize) {
+        self.level_idx.store(level_idx, Ordering::Relaxed);
         self.total.store(total_tiles, Ordering::Relaxed);
+        *self.start.lock().expect("Mutex lock failed!") = Some(Instant::now());
     }
 
     fn on_tile_dropped(
@@ -223,12 +312,38 @@ impl ExtractionObserver for ReportCollector {
             .push(tissue_fraction);
     }
 
-    fn on_tile_extraction(&self, _level_idx: usize, tile_x: u32, tile_y: u32) {
+    fn on_tile_extraction(&self, _level_idx: usize, tile: &Tile) {
         self.kept.fetch_add(1, Ordering::Relaxed);
-        self.positions
-            .lock()
-            .expect("Mutex lock failed!")
-            .push((tile_x, tile_y, true));
+        self.positions.lock().expect("Mutex lock failed!").push((
+            tile.tile_x(),
+            tile.tile_y(),
+            true,
+        ));
+
+        // Stream samples in and periodically thin them by half (doubling
+        // the stride each time), so memory stays bounded without needing
+        // to know the final kept-tile count in advance. `report()` does a
+        // final downsample to exactly `MAX_SAMPLE_TILES`.
+        let idx = self.tiles_seen.fetch_add(1, Ordering::Relaxed);
+        if idx % self.sample_stride.load(Ordering::Relaxed) == 0 {
+            let mut samples = self.samples.lock().expect("Mutex lock failed!");
+            let thumbnail = tile
+                .image()
+                .thumbnail(report::SAMPLE_TILE_PX, report::SAMPLE_TILE_PX);
+            samples.push((tile.tile_x(), tile.tile_y(), thumbnail));
+
+            if samples.len() > 2 * report::MAX_SAMPLE_TILES {
+                let thinned = samples.drain(..).step_by(2).collect();
+                *samples = thinned;
+                // Only ever mutated here, while holding `samples`' lock, so
+                // this load-then-store can't race with itself even though
+                // it isn't a single atomic op.
+                self.sample_stride.store(
+                    self.sample_stride.load(Ordering::Relaxed) * 2,
+                    Ordering::Relaxed,
+                );
+            }
+        }
     }
 }
 
@@ -266,8 +381,8 @@ impl ExtractionObserver for DualObserver {
         self.1.on_extraction_complete(level_idx, stats);
     }
 
-    fn on_tile_extraction(&self, level_idx: usize, tile_x: u32, tile_y: u32) {
-        self.0.on_tile_extraction(level_idx, tile_x, tile_y);
-        self.1.on_tile_extraction(level_idx, tile_x, tile_y);
+    fn on_tile_extraction(&self, level_idx: usize, tile: &Tile) {
+        self.0.on_tile_extraction(level_idx, tile);
+        self.1.on_tile_extraction(level_idx, tile);
     }
 }

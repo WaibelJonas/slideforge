@@ -1,15 +1,13 @@
 //! Extraction options controlling how tiles are decoded and processed during
 //! extraction.
 
-use std::fmt;
 use std::sync::Arc;
+use std::{fmt, path::PathBuf};
 
-use crate::logging::ExtractionObserver;
+use crate::logging::{DualObserver, ExtractionObserver};
 
 /// Governs whether tiles are processed sequentially or concurrently across
 /// multiple threads.
-/// Future Options (TODO):
-/// - OutputDirectory: Option<PathBuf> - specify output directory for extracted tiles
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Parallelism {
     /// Decode and process tiles seuqnetially.
@@ -42,6 +40,8 @@ pub struct ExtractionOptions {
     /// Whether to apply Reinhard stain normalization to kept tiles before
     /// they reach the extraction callback. Disabled (`false`) by default.
     pub normalize_stain: bool,
+    /// The output directory to which to extract tiles
+    pub output_dir: Option<PathBuf>,
 }
 
 impl fmt::Debug for ExtractionOptions {
@@ -50,6 +50,7 @@ impl fmt::Debug for ExtractionOptions {
             .field("parallelism", &self.parallelism)
             .field("min_tissue_fraction", &self.min_tissue_fraction)
             .field("observer", &self.observer.is_some())
+            .field("output_dir", &self.output_dir)
             .finish()
     }
 }
@@ -62,6 +63,7 @@ impl ExtractionOptions {
             min_tissue_fraction: None,
             observer: None,
             normalize_stain: false,
+            output_dir: None,
         }
     }
 
@@ -72,6 +74,7 @@ impl ExtractionOptions {
             min_tissue_fraction: None,
             observer: None,
             normalize_stain: false,
+            output_dir: None,
         }
     }
 
@@ -86,7 +89,17 @@ impl ExtractionOptions {
             min_tissue_fraction: None,
             observer: None,
             normalize_stain: false,
+            output_dir: None,
         }
+    }
+
+    /// Add a output directory to which tiles are extracted
+    ///
+    /// # Arguments
+    /// * `dir` - Directory to which to save tiles to
+    pub fn with_output_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.output_dir = Some(dir.into());
+        self
     }
 
     /// Skip tiles whose Otsu-derived tissue fraction is below `min_fraction`
@@ -105,7 +118,17 @@ impl ExtractionOptions {
     /// # Arguments
     /// * `observer` - The observer to report events to.
     pub fn with_observer(mut self, observer: impl ExtractionObserver + 'static) -> Self {
-        self.observer = Some(Arc::new(observer));
+        self.add_observer(Arc::new(observer));
+        self
+    }
+
+    /// Reports extraction events (e.g. tissue-filter drops) through the
+    /// given shared [`ExtractionObserver`].
+    ///
+    /// # Arguments
+    /// * `observer` - The observer to report events to.
+    pub fn with_shared_observer(mut self, observer: Arc<dyn ExtractionObserver>) -> Self {
+        self.add_observer(observer);
         self
     }
 
@@ -127,5 +150,12 @@ impl ExtractionOptions {
     pub fn with_stain_normalization(mut self) -> Self {
         self.normalize_stain = true;
         self
+    }
+
+    fn add_observer(&mut self, observer: Arc<dyn ExtractionObserver>) {
+        self.observer = Some(match self.observer.take() {
+            Some(existing) => Arc::new(DualObserver(existing, observer)),
+            None => observer,
+        })
     }
 }

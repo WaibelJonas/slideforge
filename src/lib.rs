@@ -12,7 +12,7 @@ pub mod tile;
 
 pub use extraction::{ExtractionOptions, Parallelism};
 pub use filter::TissueMask;
-pub use logging::{ExtractionObserver, ExtractionStats, ProgressBar, SimpleLogging};
+pub use logging::{ExtractionObserver, ExtractionStats, ProgressBar, ReportCollector, SimpleLogging};
 pub use metadata::{Dimensions, Level, Metadata, TileSize};
 pub use report::ExtractionReport;
 pub use stain::normalize_reinhard;

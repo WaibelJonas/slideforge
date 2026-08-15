@@ -1,7 +1,7 @@
-use std::path::Path;
-
-use slideforge::ExtractionOptions;
 use slideforge::slide::Slide;
+use slideforge::{ExtractionOptions, ReportCollector};
+use std::path::Path;
+use std::sync::Arc;
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -12,13 +12,16 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let dir_name = path.file_stem().unwrap();
     let dir_name = format!("assets/{}", dir_name.to_str().unwrap());
 
-    let mut extraction_options = ExtractionOptions::parallel();
-    extraction_options = extraction_options
+    let reporter = Arc::new(ReportCollector::new());
+    let extraction_options = ExtractionOptions::parallel()
         .with_min_tissue_fraction(0.2)
         .with_stain_normalization()
-        .with_progress_bar();
+        .with_progress_bar()
+        .with_shared_observer(reporter.clone())
+        .with_output_dir(&dir_name);
 
-    let report = slide.extract_to_dir_with_report(1, &dir_name, &extraction_options)?;
+    slide.extract(1, &extraction_options, |_tile| Ok(()))?;
+    let report = reporter.report(&extraction_options);
     report.write_pdf(&slide, format!("{dir_name}/report.pdf"))?;
     Ok(())
 }
