@@ -267,6 +267,18 @@ impl Tile {
             self.tile_y,
         )
     }
+
+    /// Encode the image data back to raw bytes.
+    pub fn encode_jpeg(&self) -> Result<Vec<u8>, WsiError> {
+        let mut buf = Vec::new();
+        self.image
+            .write_to(
+                &mut std::io::Cursor::new(&mut buf),
+                image::ImageFormat::Jpeg,
+            )
+            .map_err(|_| WsiError::UnsupportedFormat)?;
+        Ok(buf)
+    }
 }
 
 /// Helper function to read a list of u64 values from a TIFF tag value.
@@ -301,12 +313,12 @@ fn read_u8_list(value: &Value) -> Result<Vec<u8>, WsiError> {
 
 /// Reads the tile bytes from a specified location in the TIFF file.
 /// Tile bytes are read using a buffered reader, which maintains a shared cursor position. This function seeks to the specified offset and reads the specified number of bytes into a buffer.
-/// 
+///
 /// # Arguments
 /// * `reader` - A mutable reference to a [`BufReader`] wrapping the TIFF file.
 /// * `offset` - The offset in the file where the tile bytes start.
 /// * `byte_count` - The number of bytes to read for the tile.
-/// 
+///
 /// # Returns
 /// A [`Result`] containing a vector of bytes representing the tile data on success, or a [`WsiError`] on failure.
 pub fn read_tile_bytes(
@@ -328,20 +340,16 @@ pub fn read_tile_bytes(
 /// Reads the tile bytes from a specified location using a positional read.
 /// This function is platform-specific and uses the appropriate positional read method for Unix or Windows.
 /// It is safer for concurrent tile reads, as it does not rely on a shared cursor position.
-/// 
+///
 /// # Arguments
 /// * `file` - A reference to the [`File`] from which to read the tile bytes.
 /// * `offset` - The offset in the file where the tile bytes start.
 /// * `byte_count` - The number of bytes to read for the tile.
-/// 
+///
 /// # Returns
 /// A [`Result`] containing a vector of bytes representing the tile data on success, or a [`WsiError`] on failure.
 #[cfg(unix)]
-pub fn read_tile_bytes_at(
-    file: &File,
-    offset: u64,
-    byte_count: u64
-) -> Result<Vec<u8>, WsiError> {
+pub fn read_tile_bytes_at(file: &File, offset: u64, byte_count: u64) -> Result<Vec<u8>, WsiError> {
     use std::os::unix::fs::FileExt;
 
     let mut buffer = vec![0; byte_count as usize];
@@ -352,20 +360,16 @@ pub fn read_tile_bytes_at(
 /// Reads the tile bytes from a specified location using a positional read.
 /// This function is platform-specific and uses the appropriate positional read method for Unix or Windows.
 /// It is safer for concurrent tile reads, as it does not rely on a shared cursor position.
-/// 
+///
 /// # Arguments
 /// * `file` - A reference to the [`File`] from which to read the tile bytes.
 /// * `offset` - The offset in the file where the tile bytes start.
 /// * `byte_count` - The number of bytes to read for the tile.
-/// 
+///
 /// # Returns
 /// A [`Result`] containing a vector of bytes representing the tile data on success, or a [`WsiError`] on failure.
 #[cfg(windows)]
-pub fn read_tile_bytes_at(
-    file: &File,
-    offset: u64,
-    byte_count: u64
-) -> Result<Vec<u8>, WsiError> {
+pub fn read_tile_bytes_at(file: &File, offset: u64, byte_count: u64) -> Result<Vec<u8>, WsiError> {
     use std::os::windows::fs::FileExt;
 
     let mut buffer = vec![0; byte_count as usize];

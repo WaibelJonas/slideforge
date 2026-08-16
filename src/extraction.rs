@@ -42,6 +42,8 @@ pub struct ExtractionOptions {
     pub normalize_stain: bool,
     /// The output directory to which to extract tiles
     pub output_dir: Option<PathBuf>,
+    /// The file to which to write extracted tile information to (as a .tfrecord)
+    pub tfrecord_file: Option<PathBuf>,
 }
 
 impl fmt::Debug for ExtractionOptions {
@@ -51,6 +53,7 @@ impl fmt::Debug for ExtractionOptions {
             .field("min_tissue_fraction", &self.min_tissue_fraction)
             .field("observer", &self.observer.is_some())
             .field("output_dir", &self.output_dir)
+            .field("tfrecord_file", &self.tfrecord_file)
             .finish()
     }
 }
@@ -64,6 +67,7 @@ impl ExtractionOptions {
             observer: None,
             normalize_stain: false,
             output_dir: None,
+            tfrecord_file: None,
         }
     }
 
@@ -75,6 +79,7 @@ impl ExtractionOptions {
             observer: None,
             normalize_stain: false,
             output_dir: None,
+            tfrecord_file: None,
         }
     }
 
@@ -90,6 +95,7 @@ impl ExtractionOptions {
             observer: None,
             normalize_stain: false,
             output_dir: None,
+            tfrecord_file: None,
         }
     }
 
@@ -145,10 +151,15 @@ impl ExtractionOptions {
         self.with_observer(crate::logging::ProgressBar::new())
     }
 
-    /// Applies Reinhard stain normalization to kept tiles before they reach
-    /// the extraction callback.
+    /// Applies Reinhard stain normalization to tiles before extraction
     pub fn with_stain_normalization(mut self) -> Self {
         self.normalize_stain = true;
+        self
+    }
+
+    /// Add a .tfrecord file to which extracted tiles are recorded
+    pub fn with_tfrecord_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.tfrecord_file = Some(path.into());
         self
     }
 

@@ -18,7 +18,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .with_stain_normalization()
         .with_progress_bar()
         .with_shared_observer(reporter.clone())
-        .with_output_dir(&dir_name);
+        .with_output_dir(&dir_name)
+        .with_tfrecord_file(format!("{}.tfrecords", &dir_name));
 
     slide.extract(1, &extraction_options, |_tile| Ok(()))?;
     let report = reporter.report(&extraction_options);

@@ -5,8 +5,9 @@ use crate::extraction::{ExtractionOptions, Parallelism};
 use crate::filter::{TissueMask, grayscale_histogram, otsu_threshold_from_histogram};
 use crate::logging::ExtractionStats;
 use crate::metadata::Metadata;
-use crate::report;
+use crate::tfrecord::TfRecordWriter;
 use crate::tile::{Tile, TileDirectory, read_tile_bytes, read_tile_bytes_at};
+use crate::{report, tfrecord};
 use image::{DynamicImage, RgbImage};
 /// Representation of a single Whole Slide Image (WSI) along with its metadata.
 use rayon::prelude::*;
@@ -314,8 +315,20 @@ impl Slide {
         let total_tiles = coords.len();
         let dropped_tiles = AtomicUsize::new(0);
 
+        let slide_name = self
+            .path()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("slide")
+            .to_string();
+
         if let Some(dir) = &options.output_dir {
             std::fs::create_dir_all(dir)?;
+        }
+
+        let mut tfrecord_writer: Option<Mutex<TfRecordWriter<File>>> = None;
+        if let Some(file) = &options.tfrecord_file {
+            tfrecord_writer = Some(Mutex::new(TfRecordWriter::new(File::create(file)?)));
         }
 
         if let Some(observer) = &options.observer {
@@ -358,6 +371,16 @@ impl Slide {
             };
             if let Some(dir) = &options.output_dir {
                 tile.save(dir.join(format!("{}_{}.jpg", tile.tile_x(), tile.tile_y())))?;
+            }
+            if let Some(writer) = &tfrecord_writer {
+                let bytes = tile.encode_jpeg()?;
+                let loc_x = tile.tile_x() as i64;
+                let loc_y = tile.tile_y() as i64;
+                let record = tfrecord::tile_record(&slide_name, bytes, loc_x, loc_y);
+                writer
+                    .lock()
+                    .expect("Mutex lock failed!")
+                    .write_record(&record)?;
             }
             if let Some(observer) = &options.observer {
                 observer.on_tile_extraction(level_idx, &tile);
