@@ -225,4 +225,43 @@ impl Metadata {
     pub fn level(&self, index: usize) -> Option<&Level> {
         self.levels.get(index)
     }
+
+    /// Returns the index of the level which resolution
+    /// comes closest to a given target MPP value-
+    ///
+    /// The approximate MPP at a level is computed by
+    /// multiplying the base microns_per_pixel of the WSI by the levels
+    /// `downsampling_factor`
+    ///
+    /// # Arguments
+    /// * `target_mpp` - The target MPP as an indicator of resolution
+    ///
+    /// # Returns
+    /// An [`Option`] containing the index of an appropriate level, or [`None`]
+    /// if no base MPP is known for the WSI.
+    pub fn best_level_for_target_mpp(&self, target_mpp: f64) -> Option<usize> {
+        let base_mpp = self.microns_per_pixel()?;
+        // Approximate mpp at a given level
+        let mpp_at = |level: &Level| base_mpp * level.downsample_factor();
+
+        // Default: Return the coarsest level that qualifies
+        let best_level = self
+            .levels()
+            .iter()
+            .enumerate()
+            .filter(|(_, level)| mpp_at(level) <= target_mpp)
+            .max_by(|(_, a), (_, b)| mpp_at(a).total_cmp(&mpp_at(b)))
+            .map(|(index, _)| index);
+
+        // Fallback: Return the finest level
+        if best_level.is_some() {
+            best_level
+        } else {
+            self.levels()
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| mpp_at(a).total_cmp(&mpp_at(b)))
+                .map(|(index, _)| index)
+        }
+    }
 }

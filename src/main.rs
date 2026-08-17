@@ -17,11 +17,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .with_min_tissue_fraction(0.2)
         .with_stain_normalization()
         .with_progress_bar()
+        .with_target_mpp(2.5)
         .with_shared_observer(reporter.clone())
         .with_output_dir(&dir_name)
         .with_tfrecord_file(format!("{}.tfrecords", &dir_name));
 
-    slide.extract(1, &extraction_options, |_tile| Ok(()))?;
+    slide.extract(&extraction_options, |_tile| Ok(()))?;
     let report = reporter.report(&extraction_options);
     report.write_pdf(&slide, format!("{dir_name}/report.pdf"))?;
     Ok(())

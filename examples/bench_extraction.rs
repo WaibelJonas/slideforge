@@ -26,23 +26,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{path}: level {level}, {tile_count} tiles, {cores} logical cores\n");
 
     let modes: Vec<(&str, ExtractionOptions)> = vec![
-        ("sequential", ExtractionOptions::sequential()),
+        (
+            "sequential",
+            ExtractionOptions::sequential().with_level(level),
+        ),
         (
             "parallel (1 thread)",
-            ExtractionOptions::parallel_with_threads(1),
+            ExtractionOptions::parallel_with_threads(1).with_level(level),
         ),
         (
             "parallel (half cores)",
-            ExtractionOptions::parallel_with_threads((cores / 2).max(1)),
+            ExtractionOptions::parallel_with_threads((cores / 2).max(1)).with_level(level),
         ),
-        ("parallel (default pool)", ExtractionOptions::parallel()),
+        (
+            "parallel (default pool)",
+            ExtractionOptions::parallel().with_level(level),
+        ),
     ];
 
     let mut baseline: Option<Duration> = None;
 
     for (label, options) in modes {
         let start = Instant::now();
-        slide.extract(level, &options, |_tile| Ok(()))?;
+        slide.extract(&options, |_tile| Ok(()))?;
         let elapsed = start.elapsed();
 
         let throughput = tile_count as f64 / elapsed.as_secs_f64();

@@ -1,7 +1,7 @@
 use crate::backend::svs::parse_slide;
 use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
-use crate::extraction::{ExtractionOptions, Parallelism};
+use crate::extraction::{ExtractionLevel, ExtractionOptions, Parallelism};
 use crate::filter::{TissueMask, grayscale_histogram, otsu_threshold_from_histogram};
 use crate::logging::ExtractionStats;
 use crate::metadata::Metadata;
@@ -302,16 +302,19 @@ impl Slide {
     /// index is invalid, or [`WsiError::ThreadPool`] if a dedicated thread
     /// pool could not be built for [`Parallelism::Parallel`] with an
     /// explicit thread count.
-    pub fn extract<F>(
-        &self,
-        level_idx: usize,
-        options: &ExtractionOptions,
-        f: F,
-    ) -> Result<(), WsiError>
+    pub fn extract<F>(&self, options: &ExtractionOptions, f: F) -> Result<(), WsiError>
     where
         F: Fn(Tile) -> Result<(), WsiError> + Sync,
     {
-        let coords: Vec<(u32, u32)> = self.tile_coords(level_idx)?.collect();
+        let level_idx = match &options.extraction_level {
+            Some(ExtractionLevel::Index(idx)) => idx,
+            Some(ExtractionLevel::TargetMpp(target)) => &self
+                .metadata
+                .best_level_for_target_mpp(*target)
+                .ok_or(WsiError::InvalidMetadata)?,
+            None => return Err(WsiError::InvalidMetadata),
+        };
+        let coords: Vec<(u32, u32)> = self.tile_coords(*level_idx)?.collect();
         let total_tiles = coords.len();
         let dropped_tiles = AtomicUsize::new(0);
 
@@ -332,7 +335,7 @@ impl Slide {
         }
 
         if let Some(observer) = &options.observer {
-            observer.on_extraction_start(level_idx, total_tiles);
+            observer.on_extraction_start(*level_idx, total_tiles);
         }
 
         // A single, shared threshold derived from the lowest-resolution
@@ -348,13 +351,13 @@ impl Slide {
             if let (Some(min_fraction), Some(threshold)) =
                 (options.min_tissue_fraction, tissue_threshold)
             {
-                let cropped = self.cropped_image(level_idx, &tile)?;
+                let cropped = self.cropped_image(*level_idx, &tile)?;
                 let tissue_mask = TissueMask::compute_with_threshold(&cropped, threshold);
                 if !tissue_mask.has_more_than_min_tissue(min_fraction) {
                     dropped_tiles.fetch_add(1, Ordering::Relaxed);
                     if let Some(observer) = &options.observer {
                         observer.on_tile_dropped(
-                            level_idx,
+                            *level_idx,
                             tile.tile_x(),
                             tile.tile_y(),
                             tissue_mask.tissue_fraction(),
@@ -369,6 +372,7 @@ impl Slide {
             } else {
                 tile
             };
+
             if let Some(dir) = &options.output_dir {
                 tile.save(dir.join(format!("{}_{}.jpg", tile.tile_x(), tile.tile_y())))?;
             }
@@ -383,7 +387,7 @@ impl Slide {
                     .write_record(&record)?;
             }
             if let Some(observer) = &options.observer {
-                observer.on_tile_extraction(level_idx, &tile);
+                observer.on_tile_extraction(*level_idx, &tile);
             }
             f(tile)
         };
@@ -391,11 +395,11 @@ impl Slide {
         let result = match options.parallelism {
             Parallelism::Sequential => coords
                 .into_iter()
-                .try_for_each(|(x, y)| process(self.decode_tile(level_idx, x, y)?)),
+                .try_for_each(|(x, y)| process(self.decode_tile(*level_idx, x, y)?)),
             Parallelism::Parallel(threads) => {
                 let run = || {
                     coords.into_par_iter().try_for_each(|(x, y)| {
-                        process(self.decode_tile_concurrent(level_idx, x, y)?)
+                        process(self.decode_tile_concurrent(*level_idx, x, y)?)
                     })
                 };
 
@@ -412,7 +416,7 @@ impl Slide {
         if options.min_tissue_fraction.is_some() {
             if let Some(observer) = &options.observer {
                 observer.on_extraction_complete(
-                    level_idx,
+                    *level_idx,
                     ExtractionStats {
                         total: total_tiles,
                         dropped: dropped_tiles.load(Ordering::Relaxed),

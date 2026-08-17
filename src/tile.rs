@@ -268,6 +268,17 @@ impl Tile {
         )
     }
 
+    // Resizes the tile to the given `width` and `height`.
+    pub fn resize(&self, width: u32, height: u32) -> Tile {
+        Tile::new(
+            self.image
+                .resize_exact(width, height, image::imageops::FilterType::Triangle),
+            self.level,
+            self.tile_x,
+            self.tile_y,
+        )
+    }
+
     /// Encode the image data back to raw bytes.
     pub fn encode_jpeg(&self) -> Result<Vec<u8>, WsiError> {
         let mut buf = Vec::new();
