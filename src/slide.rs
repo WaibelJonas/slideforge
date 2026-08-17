@@ -24,6 +24,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// order is served from the buffer instead of one syscall per tile.
 const TILE_BUFFER_CAPACITY: usize = 1024 * 1024;
 
+/// Below this, resize is skipped entirely: the resolved
+/// level's native resolution is already close enough to the target.
+const RESIZE_SCALE_EPSILON: f64 = 1e-3;
+
 #[derive(Debug)]
 /// Represents a single WSI, along with its metadata.
 pub struct Slide {
@@ -314,6 +318,24 @@ impl Slide {
                 .ok_or(WsiError::InvalidMetadata)?,
             None => return Err(WsiError::InvalidMetadata),
         };
+
+        // Computing the resize scale so the chosen level matches exactly the target resolution
+        let resize_factor = match &options.extraction_level {
+            Some(ExtractionLevel::TargetMpp(target)) => {
+                let base_mpp = self
+                    .metadata
+                    .microns_per_pixel()
+                    .ok_or(WsiError::InvalidMetadata)?;
+                let level = self
+                    .metadata
+                    .level(*level_idx)
+                    .ok_or(WsiError::LevelIndexOutOfBounds)?;
+                let level_mpp = base_mpp * level.downsample_factor();
+                Some(level_mpp / target)
+            }
+            _ => None,
+        };
+
         let coords: Vec<(u32, u32)> = self.tile_coords(*level_idx)?.collect();
         let total_tiles = coords.len();
         let dropped_tiles = AtomicUsize::new(0);
@@ -369,6 +391,20 @@ impl Slide {
             }
             let tile = if options.normalize_stain {
                 tile.normalize_stain()
+            } else {
+                tile
+            };
+
+            // Resizing after tissue-filtering/normalization
+            let tile = if let Some(scale) = resize_factor {
+                if (scale - 1.0).abs() > RESIZE_SCALE_EPSILON {
+                    let (width, height) = (tile.image().width(), tile.image().height());
+                    let new_width = ((width as f64) * scale).round().max(1.0) as u32;
+                    let new_height = ((height as f64) * scale).round().max(1.0) as u32;
+                    tile.resize(new_width, new_height)
+                } else {
+                    tile
+                }
             } else {
                 tile
             };
