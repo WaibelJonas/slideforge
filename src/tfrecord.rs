@@ -180,3 +180,46 @@ pub(crate) fn tile_record(slide_name: &str, bytes: Vec<u8>, loc_x: i64, loc_y: i
         ("loc_y", FeatureValue::Int64s(vec![loc_y])),
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Inverse of the masking step, transcribed from the same authoritative
+    /// source as `masked_crc32c` itself (`Unmask` in TensorFlow's
+    /// `crc32c.h`): `rot = masked - kMaskDelta; (rot >> 17) | (rot << 15)`.
+    /// Exists only so `masked_crc32c` can be checked against it below --
+    /// there's no public need for it beyond this test.
+    fn unmask(masked: u32) -> u32 {
+        let rot = masked.wrapping_sub(0xa282ead8);
+        (rot >> 17) | (rot << 15)
+    }
+
+    #[test]
+    fn crc32c_matches_standard_check_value() {
+        // The official CRC32C (Castagnoli) check value for "123456789",
+        // cited by essentially every independent implementation.
+        assert_eq!(crc32c(b"123456789"), 0xE3069283);
+    }
+
+    #[test]
+    fn masked_crc32c_round_trips_through_unmask() {
+        let inputs: &[&[u8]] = &[
+            b"",
+            b"123456789",
+            // Chosen because its crc happens to make `shift_or + kMaskDelta`
+            // exceed u32::MAX: a regression test for a real bug where this
+            // function used a plain `+` instead of `wrapping_add`, which
+            // panicked here in debug builds (masking is defined mod 2^32,
+            // matching C++'s `uint32_t` wraparound).
+            b"hello world",
+            b"a longer string that will produce some arbitrary crc value",
+        ];
+
+        for data in inputs {
+            let crc = crc32c(data);
+            let masked = masked_crc32c(data);
+            assert_eq!(unmask(masked), crc, "round-trip failed for {data:?}");
+        }
+    }
+}

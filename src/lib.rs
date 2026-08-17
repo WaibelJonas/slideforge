@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod dataset;
 pub mod decoder;
 pub mod error;
 pub mod extraction;
