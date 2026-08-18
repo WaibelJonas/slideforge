@@ -28,6 +28,36 @@ const TILE_BUFFER_CAPACITY: usize = 1024 * 1024;
 /// level's native resolution is already close enough to the target.
 const RESIZE_SCALE_EPSILON: f64 = 1e-3;
 
+/// Destination paths for the outputs a single [`Slide::extract`] run can
+/// produce. Each field independently enables its output when `Some`;
+/// `None` (the default) disables it.
+#[derive(Debug, Clone, Default)]
+pub struct SlideOutputs {
+    /// Directory to save loose `.jpg` tiles to.
+    pub tile_dir: Option<PathBuf>,
+    /// File to write a `.tfrecord` to.
+    pub tfrecord_file: Option<PathBuf>,
+    /// File to write a single-slide PDF extraction report to.
+    pub report_path: Option<PathBuf>,
+}
+
+impl SlideOutputs {
+    pub fn with_tile_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.tile_dir = Some(dir.into());
+        self
+    }
+
+    pub fn with_tfrecord_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.tfrecord_file = Some(path.into());
+        self
+    }
+
+    pub fn with_report_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.report_path = Some(path.into());
+        self
+    }
+}
+
 #[derive(Debug)]
 /// Represents a single WSI, along with its metadata.
 pub struct Slide {
@@ -295,6 +325,23 @@ impl Slide {
         Ok(otsu_threshold_from_histogram(&histogram))
     }
 
+    /// Resolves the index of the pyramid level
+    /// best suited to resolve to the target resolution
+    /// specified by [`ExtractionLevel`]
+    pub(crate) fn resolve_resolution_level(
+        &self,
+        extraction_level: &Option<ExtractionLevel>,
+    ) -> Result<usize, WsiError> {
+        match extraction_level {
+            Some(ExtractionLevel::Index(idx)) => Ok(*idx),
+            Some(ExtractionLevel::TargetMpp(target)) => self
+                .metadata
+                .best_level_for_target_mpp(*target)
+                .ok_or(WsiError::InvalidMetadata),
+            None => return Err(WsiError::InvalidMetadata),
+        }
+    }
+
     /// Decodes every tile at `level_idx` and passes each to `f`, according to
     /// `options`.
     ///
@@ -306,18 +353,16 @@ impl Slide {
     /// index is invalid, or [`WsiError::ThreadPool`] if a dedicated thread
     /// pool could not be built for [`Parallelism::Parallel`] with an
     /// explicit thread count.
-    pub fn extract<F>(&self, options: &ExtractionOptions, f: F) -> Result<(), WsiError>
+    pub fn extract<F>(
+        &self,
+        options: &ExtractionOptions,
+        outputs: &SlideOutputs,
+        f: F,
+    ) -> Result<(), WsiError>
     where
         F: Fn(Tile) -> Result<(), WsiError> + Sync,
     {
-        let level_idx = match &options.extraction_level {
-            Some(ExtractionLevel::Index(idx)) => idx,
-            Some(ExtractionLevel::TargetMpp(target)) => &self
-                .metadata
-                .best_level_for_target_mpp(*target)
-                .ok_or(WsiError::InvalidMetadata)?,
-            None => return Err(WsiError::InvalidMetadata),
-        };
+        let level_idx = self.resolve_resolution_level(&options.extraction_level)?;
 
         // Computing the resize scale so the chosen level matches exactly the target resolution
         let resize_factor = match &options.extraction_level {
@@ -328,7 +373,7 @@ impl Slide {
                     .ok_or(WsiError::InvalidMetadata)?;
                 let level = self
                     .metadata
-                    .level(*level_idx)
+                    .level(level_idx)
                     .ok_or(WsiError::LevelIndexOutOfBounds)?;
                 let level_mpp = base_mpp * level.downsample_factor();
                 Some(level_mpp / target)
@@ -336,7 +381,7 @@ impl Slide {
             _ => None,
         };
 
-        let coords: Vec<(u32, u32)> = self.tile_coords(*level_idx)?.collect();
+        let coords: Vec<(u32, u32)> = self.tile_coords(level_idx)?.collect();
         let total_tiles = coords.len();
         let dropped_tiles = AtomicUsize::new(0);
 
@@ -347,19 +392,25 @@ impl Slide {
             .unwrap_or("slide")
             .to_string();
 
-        if let Some(dir) = &options.output_dir {
+        if let Some(dir) = &outputs.tile_dir {
+            std::fs::create_dir_all(dir)?;
+        }
+        if let Some(dir) = outputs.tfrecord_file.as_deref().and_then(Path::parent) {
+            std::fs::create_dir_all(dir)?;
+        }
+        if let Some(dir) = outputs.report_path.as_deref().and_then(Path::parent) {
             std::fs::create_dir_all(dir)?;
         }
 
         let mut tfrecord_writer: Option<Mutex<TfRecordWriter<File>>> = None;
-        if let Some(file) = &options.tfrecord_file {
+        if let Some(file) = &outputs.tfrecord_file {
             tfrecord_writer = Some(Mutex::new(TfRecordWriter::new(File::create(file)?)));
         }
 
-        // When `report_path` is set, build a `ReportCollector` and
+        // When `outputs.report_path` is set, build a `ReportCollector` and
         // add it to the observer chain (needs a DualObserver setup if
         // there's already a different observer)
-        let report_collector = match &options.slide_report_path {
+        let report_collector = match &outputs.report_path {
             Some(_) => Some(Arc::new(ReportCollector::new())),
             None => None,
         };
@@ -374,7 +425,7 @@ impl Slide {
             };
 
         if let Some(observer) = &effective_observer {
-            observer.on_extraction_start(*level_idx, total_tiles);
+            observer.on_extraction_start(level_idx, total_tiles);
         }
 
         // A single, shared threshold derived from the lowest-resolution
@@ -390,13 +441,13 @@ impl Slide {
             if let (Some(min_fraction), Some(threshold)) =
                 (options.min_tissue_fraction, tissue_threshold)
             {
-                let cropped = self.cropped_image(*level_idx, &tile)?;
+                let cropped = self.cropped_image(level_idx, &tile)?;
                 let tissue_mask = TissueMask::compute_with_threshold(&cropped, threshold);
                 if !tissue_mask.has_more_than_min_tissue(min_fraction) {
                     dropped_tiles.fetch_add(1, Ordering::Relaxed);
                     if let Some(observer) = &effective_observer {
                         observer.on_tile_dropped(
-                            *level_idx,
+                            level_idx,
                             tile.tile_x(),
                             tile.tile_y(),
                             tissue_mask.tissue_fraction(),
@@ -426,7 +477,7 @@ impl Slide {
                 tile
             };
 
-            if let Some(dir) = &options.output_dir {
+            if let Some(dir) = &outputs.tile_dir {
                 tile.save(dir.join(format!("{}_{}.jpg", tile.tile_x(), tile.tile_y())))?;
             }
             if let Some(writer) = &tfrecord_writer {
@@ -440,7 +491,7 @@ impl Slide {
                     .write_record(&record)?;
             }
             if let Some(observer) = &effective_observer {
-                observer.on_tile_extraction(*level_idx, &tile);
+                observer.on_tile_extraction(level_idx, &tile);
             }
             f(tile)
         };
@@ -448,11 +499,11 @@ impl Slide {
         let result = match options.parallelism {
             Parallelism::Sequential => coords
                 .into_iter()
-                .try_for_each(|(x, y)| process(self.decode_tile(*level_idx, x, y)?)),
+                .try_for_each(|(x, y)| process(self.decode_tile(level_idx, x, y)?)),
             Parallelism::Parallel(threads) => {
                 let run = || {
                     coords.into_par_iter().try_for_each(|(x, y)| {
-                        process(self.decode_tile_concurrent(*level_idx, x, y)?)
+                        process(self.decode_tile_concurrent(level_idx, x, y)?)
                     })
                 };
 
@@ -469,7 +520,7 @@ impl Slide {
         if options.min_tissue_fraction.is_some() {
             if let Some(observer) = &effective_observer {
                 observer.on_extraction_complete(
-                    *level_idx,
+                    level_idx,
                     ExtractionStats {
                         total: total_tiles,
                         dropped: dropped_tiles.load(Ordering::Relaxed),
@@ -478,9 +529,9 @@ impl Slide {
             }
         }
 
-        // Only on success produce a `.pdf` report
+        // Only on success => produce a `.pdf` report
         if result.is_ok() {
-            if let (Some(path), Some(collector)) = (&options.slide_report_path, &report_collector) {
+            if let (Some(path), Some(collector)) = (&outputs.report_path, &report_collector) {
                 collector.report(options).write_pdf(self, path)?;
             }
         }

@@ -72,7 +72,7 @@ impl From<&ExtractionOptions> for OptionsSummary {
 }
 
 /// Summary of the extraction stats for a single slide
-struct SlideSummary {
+pub(crate) struct SlideSummary {
     /// Slide name
     name: String,
     /// number of kept tiles
@@ -80,9 +80,31 @@ struct SlideSummary {
     /// number of dropped tiles
     dropped: usize,
     overview: DynamicImage,
-    tile_positions: Vec<(u32, u32)>,
+    tile_positions: Vec<(u32, u32, bool)>,
     level_dimensions: (u32, u32),
     tile_size: (u32, u32),
+}
+
+impl SlideSummary {
+    pub(crate) fn new(
+        name: String,
+        kept: usize,
+        dropped: usize,
+        overview: DynamicImage,
+        tile_positions: Vec<(u32, u32, bool)>,
+        level_dimensions: (u32, u32),
+        tile_size: (u32, u32),
+    ) -> Self {
+        Self {
+            name,
+            kept,
+            dropped,
+            overview,
+            tile_positions,
+            level_dimensions,
+            tile_size,
+        }
+    }
 }
 
 /// Summary of a completed
@@ -297,6 +319,49 @@ impl ExtractionReport {
         left_y.min(right_y) - 6.0
     }
 
+    fn draw_kept_tile_grid(
+        ops: &mut Vec<Op>,
+        tile_positions: &[(u32, u32, bool)],
+        tile_w: f32,
+        tile_h: f32,
+        level_w: f32,
+        level_h: f32,
+        x0: f32,
+        y0: f32,
+        w_mm: f32,
+        h_mm: f32,
+    ) {
+        ops.push(Op::SetOutlineThickness { pt: Pt(0.4) });
+        ops.push(Op::SetOutlineColor {
+            col: Color::Rgb(KEPT_COLOR),
+        });
+
+        for &(tile_x, tile_y, kept) in tile_positions {
+            if !kept {
+                continue;
+            }
+
+            let (fx0, fy0, fx1, fy1) =
+                tile_fractional_bounds(tile_x, tile_y, tile_w, tile_h, level_w, level_h);
+
+            let rect_x = x0 + fx0 * w_mm;
+            let rect_w = (fx1 - fx0) * w_mm;
+            let rect_y = y0 + (1.0 - fy1) * h_mm;
+            let rect_h = (fy1 - fy0) * h_mm;
+
+            ops.push(Op::DrawRectangle {
+                rectangle: Rect {
+                    x: Mm(rect_x).into_pt(),
+                    y: Mm(rect_y).into_pt(),
+                    width: Mm(rect_w).into_pt(),
+                    height: Mm(rect_h).into_pt(),
+                    mode: Some(PaintMode::Stroke),
+                    winding_order: None,
+                },
+            });
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn write_overview(
         &self,
@@ -326,35 +391,18 @@ impl ExtractionReport {
             let tile_w = level.tile_size().width as f32;
             let tile_h = level.tile_size().height as f32;
 
-            ops.push(Op::SetOutlineThickness { pt: Pt(0.4) });
-            ops.push(Op::SetOutlineColor {
-                col: Color::Rgb(KEPT_COLOR),
-            });
-
-            for &(tile_x, tile_y, kept) in &self.tile_positions {
-                if !kept {
-                    continue;
-                }
-
-                let (fx0, fy0, fx1, fy1) =
-                    tile_fractional_bounds(tile_x, tile_y, tile_w, tile_h, level_w, level_h);
-
-                let rect_x = x0 + fx0 * w_mm;
-                let rect_w = (fx1 - fx0) * w_mm;
-                let rect_y = y0 + (1.0 - fy1) * h_mm;
-                let rect_h = (fy1 - fy0) * h_mm;
-
-                ops.push(Op::DrawRectangle {
-                    rectangle: Rect {
-                        x: Mm(rect_x).into_pt(),
-                        y: Mm(rect_y).into_pt(),
-                        width: Mm(rect_w).into_pt(),
-                        height: Mm(rect_h).into_pt(),
-                        mode: Some(PaintMode::Stroke),
-                        winding_order: None,
-                    },
-                });
-            }
+            Self::draw_kept_tile_grid(
+                ops,
+                &self.tile_positions,
+                tile_w,
+                tile_h,
+                level_w,
+                level_h,
+                x0,
+                y0,
+                w_mm,
+                h_mm,
+            );
         }
 
         y0 - 4.0
@@ -549,6 +597,27 @@ fn histogram_bins(values: &[f32], bin_count: usize) -> Vec<usize> {
     bins
 }
 
+/// Bins `values` into `bin_count` equal-width buckets over `[min, max]`
+/// (derived from `values` itself). Returns `(bins, min, max)`. All values
+/// land in the first bin when `min == max`.
+fn histogram_bins_range(values: &[usize], bin_count: usize) -> (Vec<usize>, usize, usize) {
+    let min = values.iter().copied().min().unwrap_or(0);
+    let max = values.iter().copied().max().unwrap_or(0);
+    let mut bins = vec![0usize; bin_count];
+
+    if max == min {
+        bins[0] = values.len();
+        return (bins, min, max);
+    }
+
+    let range = (max - min) as f32;
+    for &v in values {
+        let idx = (((v - min) as f32 / range) * bin_count as f32) as usize;
+        bins[idx.min(bin_count - 1)] += 1;
+    }
+    (bins, min, max)
+}
+
 /// Formats the current time as `YYYY-MM-DD HH:MM:SS UTC`, without pulling
 /// in a date/time dependency. Uses Howard Hinnant's `civil_from_days`
 /// algorithm to convert days-since-epoch into a proleptic Gregorian date.
@@ -584,6 +653,294 @@ pub struct DatasetReport {
     failures: Vec<(PathBuf, WsiError)>,
     options: OptionsSummary,
     elapsed: Duration,
+}
+
+impl DatasetReport {
+    pub(crate) fn new(
+        slides: Vec<SlideSummary>,
+        failures: Vec<(PathBuf, WsiError)>,
+        options: &ExtractionOptions,
+        elapsed: Duration,
+    ) -> Self {
+        Self {
+            slides,
+            failures,
+            options: OptionsSummary::from(options),
+            elapsed,
+        }
+    }
+
+    pub fn total_slides(&self) -> usize {
+        self.slides.len() + self.failures.len()
+    }
+    pub fn succeeded(&self) -> usize {
+        self.slides.len()
+    }
+    pub fn total_kept(&self) -> usize {
+        self.slides.iter().map(|s| s.kept).sum()
+    }
+    pub fn total_dropped(&self) -> usize {
+        self.slides.iter().map(|s| s.dropped).sum()
+    }
+
+    /// Renders this report as a multi-page PDF at `path`: a summary page
+    /// followed by pages of per-slide overviews (4 per page, 2x2 grid).
+    pub fn write_pdf(&self, path: impl AsRef<Path>) -> Result<(), WsiError> {
+        let mut font_warnings = Vec::new();
+        let font =
+            ParsedFont::from_bytes(FONT_BYTES, 0, &mut font_warnings).ok_or(WsiError::Report)?;
+
+        let mut doc = PdfDocument::new("Dataset extraction report");
+        let font_id = doc.add_font(&font);
+
+        let slide_images = self
+            .slides
+            .iter()
+            .map(|s| {
+                let raw = to_embeddable_image(&s.overview)?;
+                let (w, h) = (raw.width as u32, raw.height as u32);
+                Ok((doc.add_image(&raw), w, h))
+            })
+            .collect::<Result<Vec<(XObjectId, u32, u32)>, WsiError>>()?;
+
+        let mut pages = vec![PdfPage::new(
+            Mm(PAGE_WIDTH_MM),
+            Mm(PAGE_HEIGHT_MM),
+            self.write_summary_page(&font_id),
+        )];
+
+        for (chunk_idx, chunk) in self.slides.chunks(4).enumerate() {
+            let start = chunk_idx * 4;
+            let images = &slide_images[start..start + chunk.len()];
+            let ops = self.write_slide_grid_page(&font_id, chunk, images);
+            pages.push(PdfPage::new(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), ops));
+        }
+
+        doc.with_pages(pages);
+
+        let mut save_warnings = Vec::new();
+        let bytes = doc.save(&PdfSaveOptions::default(), &mut save_warnings);
+        std::fs::write(path, bytes)?;
+
+        Ok(())
+    }
+
+    fn write_summary_page(&self, font: &FontId) -> Vec<Op> {
+        let mut ops = Vec::new();
+        let y = PAGE_HEIGHT_MM - MARGIN_MM;
+
+        push_text(
+            &mut ops,
+            font,
+            18.0,
+            MARGIN_MM,
+            y,
+            "Dataset extraction report",
+        );
+        let y = y - 8.0;
+        push_text(
+            &mut ops,
+            font,
+            10.0,
+            MARGIN_MM,
+            y,
+            &format!("Generated: {}", format_utc_now()),
+        );
+        let y = y - 5.0;
+        push_text(
+            &mut ops,
+            font,
+            10.0,
+            MARGIN_MM,
+            y,
+            &format!("Elapsed: {:.1}s", self.elapsed.as_secs_f32()),
+        );
+        let y = y - 10.0;
+
+        let left_x = MARGIN_MM;
+        let right_x = MARGIN_MM + COLUMN_WIDTH_MM + 10.0;
+
+        push_text(&mut ops, font, 12.0, left_x, y, "Pipeline");
+        push_text(&mut ops, font, 12.0, right_x, y, "Stats");
+        let mut left_y = y - 6.0;
+        let mut right_y = y - 6.0;
+
+        let parallelism = match self.options.parallelism {
+            Parallelism::Sequential => "sequential".to_string(),
+            Parallelism::Parallel(None) => "parallel (default pool)".to_string(),
+            Parallelism::Parallel(Some(n)) => format!("parallel ({n} threads)"),
+        };
+        let pipeline_lines = [
+            format!("Parallelism: {parallelism}"),
+            format!(
+                "Min tissue fraction: {}",
+                self.options
+                    .min_tissue_fraction
+                    .map(|f| format!("{f:.2}"))
+                    .unwrap_or_else(|| "disabled".to_string())
+            ),
+            format!(
+                "Stain normalization: {}",
+                if self.options.normalize_stain {
+                    "on"
+                } else {
+                    "off"
+                }
+            ),
+        ];
+        for line in &pipeline_lines {
+            push_text(&mut ops, font, 10.0, left_x, left_y, line);
+            left_y -= 5.0;
+        }
+
+        let stats_lines = [
+            format!("Slides: {}", self.total_slides()),
+            format!("Succeeded: {}", self.succeeded()),
+            format!("Failed: {}", self.failures.len()),
+            format!("Total kept tiles: {}", self.total_kept()),
+            format!("Total dropped tiles: {}", self.total_dropped()),
+        ];
+        for line in &stats_lines {
+            push_text(&mut ops, font, 10.0, right_x, right_y, line);
+            right_y -= 5.0;
+        }
+
+        let y = left_y.min(right_y) - 6.0;
+        let y = self.write_kept_histogram(&mut ops, font, y);
+
+        if !self.failures.is_empty() {
+            push_text(&mut ops, font, 11.0, MARGIN_MM, y, "Failures");
+            let mut fy = y - 6.0;
+            for (path, err) in &self.failures {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                push_text(&mut ops, font, 9.0, MARGIN_MM, fy, &format!("{name}: {err}"));
+                fy -= 5.0;
+            }
+        }
+
+        ops
+    }
+
+    fn write_kept_histogram(&self, ops: &mut Vec<Op>, font: &FontId, y: f32) -> f32 {
+        let panel_w = CONTENT_WIDTH_MM;
+        let panel_h = 50.0;
+
+        push_text(ops, font, 11.0, MARGIN_MM, y, "Kept tiles per slide");
+        let chart_top = y - 5.0;
+        let chart_bottom = chart_top - panel_h;
+
+        let counts: Vec<usize> = self.slides.iter().map(|s| s.kept).collect();
+        if counts.is_empty() {
+            push_text(
+                ops,
+                font,
+                9.0,
+                MARGIN_MM,
+                chart_top - 10.0,
+                "(no successful slides)",
+            );
+            return chart_bottom - 4.0;
+        }
+
+        let (bins, min, max) = histogram_bins_range(&counts, HISTOGRAM_BIN_COUNT);
+        let max_count = bins.iter().copied().max().unwrap_or(1).max(1) as f32;
+
+        let bar_gap = 1.0;
+        let bar_w =
+            (panel_w - bar_gap * (HISTOGRAM_BIN_COUNT as f32 - 1.0)) / HISTOGRAM_BIN_COUNT as f32;
+        let baseline_y = chart_bottom + 8.0;
+
+        ops.push(Op::SetFillColor {
+            col: Color::Rgb(BAR_COLOR),
+        });
+        for (i, &count) in bins.iter().enumerate() {
+            let bar_h = ((count as f32 / max_count) * (panel_h - 8.0)).max(0.2);
+            let bar_x = MARGIN_MM + i as f32 * (bar_w + bar_gap);
+
+            ops.push(Op::DrawRectangle {
+                rectangle: Rect {
+                    x: Mm(bar_x).into_pt(),
+                    y: Mm(baseline_y).into_pt(),
+                    width: Mm(bar_w).into_pt(),
+                    height: Mm(bar_h).into_pt(),
+                    mode: Some(PaintMode::Fill),
+                    winding_order: None,
+                },
+            });
+        }
+
+        push_text(ops, font, 7.0, MARGIN_MM, chart_bottom, &format!("{min}"));
+        push_text(
+            ops,
+            font,
+            7.0,
+            MARGIN_MM + panel_w - 6.0,
+            chart_bottom,
+            &format!("{max}"),
+        );
+
+        chart_bottom - 4.0
+    }
+
+    fn write_slide_grid_page(
+        &self,
+        font: &FontId,
+        slides: &[SlideSummary],
+        images: &[(XObjectId, u32, u32)],
+    ) -> Vec<Op> {
+        let mut ops = Vec::new();
+        let cell_w = COLUMN_WIDTH_MM;
+        let cell_h = 110.0;
+        let gap = 10.0;
+
+        for (i, (slide, (image_id, px_w, px_h))) in slides.iter().zip(images.iter()).enumerate() {
+            let col = i % 2;
+            let row = i / 2;
+            let x0 = MARGIN_MM + col as f32 * (cell_w + gap);
+            let top = PAGE_HEIGHT_MM - MARGIN_MM - row as f32 * (cell_h + gap);
+
+            push_text(&mut ops, font, 11.0, x0, top, &slide.name);
+            let caption_y = top - 5.0;
+            push_text(
+                &mut ops,
+                font,
+                8.0,
+                x0,
+                caption_y,
+                &format!("Kept: {} | Dropped: {}", slide.kept, slide.dropped),
+            );
+            let image_top = caption_y - 5.0;
+
+            let (w_mm, h_mm) = fit_within(*px_w as f32 / *px_h as f32, cell_w, cell_h - 10.0);
+            let y0 = image_top - h_mm;
+
+            ops.push(image_op(image_id.clone(), *px_w, x0, y0, w_mm));
+
+            let (level_w, level_h) = (
+                slide.level_dimensions.0 as f32,
+                slide.level_dimensions.1 as f32,
+            );
+            let (tile_w, tile_h) = (slide.tile_size.0 as f32, slide.tile_size.1 as f32);
+
+            ExtractionReport::draw_kept_tile_grid(
+                &mut ops,
+                &slide.tile_positions,
+                tile_w,
+                tile_h,
+                level_w,
+                level_h,
+                x0,
+                y0,
+                w_mm,
+                h_mm,
+            );
+        }
+
+        ops
+    }
 }
 
 #[cfg(test)]

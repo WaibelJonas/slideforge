@@ -1,8 +1,8 @@
 //! Extraction options controlling how tiles are decoded and processed during
 //! extraction.
 
+use std::fmt;
 use std::sync::Arc;
-use std::{fmt, path::PathBuf};
 
 use crate::logging::{DualObserver, ExtractionObserver};
 
@@ -38,7 +38,12 @@ pub enum ExtractionLevel {
     TargetMpp(f64),
 }
 
-/// Options controlling tile extraction.
+/// Options controlling how tiles are decoded and processed during
+/// extraction. Contains no output destinations -- those are call-site
+/// arguments ([`SlideOutputs`](crate::slide::SlideOutputs),
+/// [`DatasetOutputs`](crate::dataset::DatasetOutputs)) since they differ
+/// per slide, while these options are meant to be reused identically
+/// across every slide in a dataset.
 #[derive(Clone, Default)]
 pub struct ExtractionOptions {
     pub parallelism: Parallelism,
@@ -53,20 +58,8 @@ pub struct ExtractionOptions {
     /// Whether to apply Reinhard stain normalization to kept tiles before
     /// they reach the extraction callback. Disabled (`false`) by default.
     pub normalize_stain: bool,
-    /// The output directory to which to extract tiles
-    pub output_dir: Option<PathBuf>,
-    /// The file to which to write extracted tile information to (as a .tfrecord)
-    pub tfrecord_file: Option<PathBuf>,
     /// Target extraction level
     pub extraction_level: Option<ExtractionLevel>,
-    /// Where to write a single-slide `.pdf` extraction report for a
-    /// [`Slide::extract`](crate::slide::Slide::extract) run. `None`
-    /// (default) means no report is generated
-    pub slide_report_path: Option<PathBuf>,
-    /// Path to write a `.pdf` extraction report for a
-    /// [`Dataset::extract`](crate::dataset::Dataset::extract) run. `None`
-    /// (default) means no report is generated.
-    pub dataset_report_path: Option<PathBuf>,
 }
 
 impl fmt::Debug for ExtractionOptions {
@@ -75,11 +68,8 @@ impl fmt::Debug for ExtractionOptions {
             .field("parallelism", &self.parallelism)
             .field("min_tissue_fraction", &self.min_tissue_fraction)
             .field("observer", &self.observer.is_some())
-            .field("output_dir", &self.output_dir)
-            .field("tfrecord_file", &self.tfrecord_file)
+            .field("normalize_stain", &self.normalize_stain)
             .field("extraction_level", &self.extraction_level)
-            .field("slide_report_path", &self.slide_report_path)
-            .field("dataset_report_path", &self.dataset_report_path)
             .finish()
     }
 }
@@ -92,11 +82,7 @@ impl ExtractionOptions {
             min_tissue_fraction: None,
             observer: None,
             normalize_stain: false,
-            output_dir: None,
-            tfrecord_file: None,
             extraction_level: None,
-            slide_report_path: None,
-            dataset_report_path: None,
         }
     }
 
@@ -107,11 +93,7 @@ impl ExtractionOptions {
             min_tissue_fraction: None,
             observer: None,
             normalize_stain: false,
-            output_dir: None,
-            tfrecord_file: None,
             extraction_level: None,
-            slide_report_path: None,
-            dataset_report_path: None,
         }
     }
 
@@ -126,21 +108,8 @@ impl ExtractionOptions {
             min_tissue_fraction: None,
             observer: None,
             normalize_stain: false,
-            output_dir: None,
-            tfrecord_file: None,
             extraction_level: None,
-            slide_report_path: None,
-            dataset_report_path: None,
         }
-    }
-
-    /// Add a output directory to which tiles are extracted
-    ///
-    /// # Arguments
-    /// * `dir` - Directory to which to save tiles to
-    pub fn with_output_dir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.output_dir = Some(dir.into());
-        self
     }
 
     /// Skip tiles whose Otsu-derived tissue fraction is below `min_fraction`
@@ -192,12 +161,6 @@ impl ExtractionOptions {
         self
     }
 
-    /// Add a .tfrecord file to which extracted tiles are recorded
-    pub fn with_tfrecord_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.tfrecord_file = Some(path.into());
-        self
-    }
-
     pub fn with_level(mut self, level_idx: usize) -> Self {
         self.extraction_level = Some(ExtractionLevel::Index(level_idx));
         self
@@ -205,28 +168,6 @@ impl ExtractionOptions {
 
     pub fn with_target_mpp(mut self, target_mpp: f64) -> Self {
         self.extraction_level = Some(ExtractionLevel::TargetMpp(target_mpp));
-        self
-    }
-
-    /// Write a single-slide PDF extraction report to `path` when
-    /// a [`Slide::extract`](crate::slide::Slide::extract) run finishes.
-    ///
-    /// # Note
-    /// Only use when the [ExtractionOptions] object is to be passed to a
-    /// [`Slide::extract`](crate::slide::Slide::extract) run.
-    pub fn with_slide_report(mut self, path: impl Into<PathBuf>) -> Self {
-        self.slide_report_path = Some(path.into());
-        self
-    }
-
-    /// Write a multi-slide PDF extraction report to `path` when
-    /// [`Dataset::extract`](crate::dataset::Dataset::extract) finishes.
-    ///
-    /// # Note
-    /// Only use when the [ExtractionOptions] object is to be passed to a
-    /// [`Dataset::extract`](crate::dataset::Dataset::extract) run.
-    pub fn with_dataset_report(mut self, path: impl Into<PathBuf>) -> Self {
-        self.dataset_report_path = Some(path.into());
         self
     }
 

@@ -29,21 +29,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_min_tissue_fraction(0.2)
         .with_stain_normalization()
         .with_progress_bar()
-        .with_target_mpp(0.5)
-        // Whether tiles/tfrecords get written at all is controlled by the
-        // `DatasetOutputs` passed to `extract` below, not by these fields
-        // being set. `output_dir`'s *value* is still honored as a
-        // subfolder name relative to each slide's own directory under
-        // `output_root`: produces `{output_root}/{slide_stem}/tiles/`.
-        .with_output_dir("tiles");
+        .with_target_mpp(5.0);
 
+    // Whether tiles/tfrecords get written at all -- and where -- is fully
+    // controlled by `DatasetOutputs`, independent of `options` above.
     let outputs = DatasetOutputs {
         tiles: true,
         tfrecords: true,
-        report: false,
+        tile_subdir: Some("tiles".into()),
+        report_path: Some(format!("{output_root}/report.pdf").into()),
     };
-    dataset.extract(&options, &output_root, outputs, |_slide, _tile| Ok(()))?;
+    let report = dataset.extract(&options, &output_root, outputs, |_slide, _tile| Ok(()))?;
 
-    println!("Done. Per-slide tiles/tfrecords written under {output_root}/");
+    println!(
+        "Done. {}/{} slides succeeded, {} tiles kept, {} dropped.",
+        report.succeeded(),
+        report.total_slides(),
+        report.total_kept(),
+        report.total_dropped()
+    );
+    println!("Per-slide tiles/tfrecords written under {output_root}/");
+    println!("Dataset report written to {output_root}/report.pdf");
     Ok(())
 }

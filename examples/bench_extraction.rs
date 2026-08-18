@@ -8,7 +8,7 @@ use std::env;
 use std::time::{Duration, Instant};
 
 use slideforge::ExtractionOptions;
-use slideforge::slide::Slide;
+use slideforge::slide::{Slide, SlideOutputs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (label, options) in modes {
         let start = Instant::now();
-        slide.extract(&options, |_tile| Ok(()))?;
+        slide.extract(&options, &SlideOutputs::default(), |_tile| Ok(()))?;
         let elapsed = start.elapsed();
 
         let throughput = tile_count as f64 / elapsed.as_secs_f64();
