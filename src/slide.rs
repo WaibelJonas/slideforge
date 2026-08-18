@@ -3,7 +3,7 @@ use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
 use crate::extraction::{ExtractionLevel, ExtractionOptions, Parallelism};
 use crate::filter::{TissueMask, grayscale_histogram, otsu_threshold_from_histogram};
-use crate::logging::ExtractionStats;
+use crate::logging::{DualObserver, ExtractionObserver, ExtractionStats, ReportCollector};
 use crate::metadata::Metadata;
 use crate::tfrecord::TfRecordWriter;
 use crate::tile::{Tile, TileDirectory, read_tile_bytes, read_tile_bytes_at};
@@ -15,8 +15,8 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Capacity of the buffer used for tile reads.
 ///
@@ -356,7 +356,24 @@ impl Slide {
             tfrecord_writer = Some(Mutex::new(TfRecordWriter::new(File::create(file)?)));
         }
 
-        if let Some(observer) = &options.observer {
+        // When `report_path` is set, build a `ReportCollector` and
+        // add it to the observer chain (needs a DualObserver setup if
+        // there's already a different observer)
+        let report_collector = match &options.slide_report_path {
+            Some(_) => Some(Arc::new(ReportCollector::new())),
+            None => None,
+        };
+        let effective_observer: Option<Arc<dyn ExtractionObserver>> =
+            match (&options.observer, &report_collector) {
+                (Some(existing), Some(collector)) => {
+                    Some(Arc::new(DualObserver(existing.clone(), collector.clone())))
+                }
+                (Some(existing), None) => Some(existing.clone()),
+                (None, Some(collector)) => Some(collector.clone() as Arc<dyn ExtractionObserver>),
+                (None, None) => None,
+            };
+
+        if let Some(observer) = &effective_observer {
             observer.on_extraction_start(*level_idx, total_tiles);
         }
 
@@ -377,7 +394,7 @@ impl Slide {
                 let tissue_mask = TissueMask::compute_with_threshold(&cropped, threshold);
                 if !tissue_mask.has_more_than_min_tissue(min_fraction) {
                     dropped_tiles.fetch_add(1, Ordering::Relaxed);
-                    if let Some(observer) = &options.observer {
+                    if let Some(observer) = &effective_observer {
                         observer.on_tile_dropped(
                             *level_idx,
                             tile.tile_x(),
@@ -422,7 +439,7 @@ impl Slide {
                     .expect("Mutex lock failed!")
                     .write_record(&record)?;
             }
-            if let Some(observer) = &options.observer {
+            if let Some(observer) = &effective_observer {
                 observer.on_tile_extraction(*level_idx, &tile);
             }
             f(tile)
@@ -450,7 +467,7 @@ impl Slide {
         };
 
         if options.min_tissue_fraction.is_some() {
-            if let Some(observer) = &options.observer {
+            if let Some(observer) = &effective_observer {
                 observer.on_extraction_complete(
                     *level_idx,
                     ExtractionStats {
@@ -458,6 +475,13 @@ impl Slide {
                         dropped: dropped_tiles.load(Ordering::Relaxed),
                     },
                 );
+            }
+        }
+
+        // Only on success produce a `.pdf` report
+        if result.is_ok() {
+            if let (Some(path), Some(collector)) = (&options.slide_report_path, &report_collector) {
+                collector.report(options).write_pdf(self, path)?;
             }
         }
 

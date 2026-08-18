@@ -22,6 +22,8 @@ pub struct DatasetOutputs {
     pub tiles: bool,
     /// Write a `.tfrecord` per slide, named after the slide itself.
     pub tfrecords: bool,
+    /// Write a `.pdf` tile extraction report under the output directory
+    pub report: bool,
 }
 
 impl Dataset {

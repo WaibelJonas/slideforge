@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outputs = DatasetOutputs {
         tiles: true,
         tfrecords: true,
+        report: false,
     };
     dataset.extract(&options, &output_root, outputs, |_slide, _tile| Ok(()))?;
 

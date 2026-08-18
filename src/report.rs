@@ -4,7 +4,7 @@
 //! [`Slide::extract_with_report`](crate::slide::Slide::extract_with_report)
 //! run and renders it to a single-page PDF via [`ExtractionReport::write_pdf`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use image::DynamicImage;
@@ -69,6 +69,20 @@ impl From<&ExtractionOptions> for OptionsSummary {
             normalize_stain: options.normalize_stain,
         }
     }
+}
+
+/// Summary of the extraction stats for a single slide
+struct SlideSummary {
+    /// Slide name
+    name: String,
+    /// number of kept tiles
+    kept: usize,
+    /// number of dropped tiles
+    dropped: usize,
+    overview: DynamicImage,
+    tile_positions: Vec<(u32, u32)>,
+    level_dimensions: (u32, u32),
+    tile_size: (u32, u32),
 }
 
 /// Summary of a completed
@@ -563,6 +577,13 @@ fn format_utc_now() -> String {
         (secs_of_day % 3600) / 60,
         secs_of_day % 60
     )
+}
+
+pub struct DatasetReport {
+    slides: Vec<SlideSummary>,
+    failures: Vec<(PathBuf, WsiError)>,
+    options: OptionsSummary,
+    elapsed: Duration,
 }
 
 #[cfg(test)]
