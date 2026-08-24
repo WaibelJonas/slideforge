@@ -410,7 +410,10 @@ impl Slide {
         // When `outputs.report_path` is set, build a `ReportCollector` and
         // add it to the observer chain (needs a DualObserver setup if
         // there's already a different observer)
-        let report_collector = outputs.report_path.as_ref().map(|_| Arc::new(ReportCollector::new()));
+        let report_collector = outputs
+            .report_path
+            .as_ref()
+            .map(|_| Arc::new(ReportCollector::new()));
         let effective_observer: Option<Arc<dyn ExtractionObserver>> =
             match (&options.observer, &report_collector) {
                 (Some(existing), Some(collector)) => {
@@ -515,21 +518,23 @@ impl Slide {
         };
 
         if options.min_tissue_fraction.is_some()
-            && let Some(observer) = &effective_observer {
-                observer.on_extraction_complete(
-                    level_idx,
-                    ExtractionStats {
-                        total: total_tiles,
-                        dropped: dropped_tiles.load(Ordering::Relaxed),
-                    },
-                );
-            }
+            && let Some(observer) = &effective_observer
+        {
+            observer.on_extraction_complete(
+                level_idx,
+                ExtractionStats {
+                    total: total_tiles,
+                    dropped: dropped_tiles.load(Ordering::Relaxed),
+                },
+            );
+        }
 
         // Only on success => produce a `.pdf` report
         if result.is_ok()
-            && let (Some(path), Some(collector)) = (&outputs.report_path, &report_collector) {
-                collector.report(options).write_pdf(self, path)?;
-            }
+            && let (Some(path), Some(collector)) = (&outputs.report_path, &report_collector)
+        {
+            collector.report(options).write_pdf(self, path)?;
+        }
 
         result
     }

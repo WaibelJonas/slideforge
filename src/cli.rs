@@ -4,7 +4,11 @@ use clap::{Args, Parser, Subcommand};
 use slideforge::ExtractionOptions;
 
 #[derive(Parser)]
-#[command(name = "slideforge", version, about = "Whole-slide image tile extraction")]
+#[command(
+    name = "slideforge",
+    version,
+    about = "Whole-slide image tile extraction"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

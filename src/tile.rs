@@ -218,8 +218,7 @@ impl Tile {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), WsiError> {
-        self
-            .image
+        self.image
             .save(path)
             .map_err(|_| WsiError::UnsupportedFormat)
     }

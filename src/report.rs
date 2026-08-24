@@ -17,8 +17,8 @@ use crate::error::WsiError;
 use crate::extraction::{ExtractionOptions, Parallelism};
 use crate::slide::Slide;
 
-/// Local placeholder font source for Windows. Needs to be replaced with a bundled font asap.
-const FONT_BYTES: &[u8] = include_bytes!(r"C:\Windows\Fonts\arial.ttf");
+/// Liberation Sans (SIL OFL 1.1, metric-compatible with Arial). For more information, see `assets/fonts/LICENSE`
+const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Regular.ttf");
 
 const PAGE_WIDTH_MM: f32 = 210.0;
 const PAGE_HEIGHT_MM: f32 = 297.0;
@@ -817,7 +817,14 @@ impl DatasetReport {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
-                push_text(&mut ops, font, 9.0, MARGIN_MM, fy, &format!("{name}: {err}"));
+                push_text(
+                    &mut ops,
+                    font,
+                    9.0,
+                    MARGIN_MM,
+                    fy,
+                    &format!("{name}: {err}"),
+                );
                 fy -= 5.0;
             }
         }

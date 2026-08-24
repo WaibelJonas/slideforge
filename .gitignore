@@ -32,5 +32,8 @@ assets/*
 # ...except the bundled stain-normalization reference tile, which is
 # include_bytes!()'d at compile time and must be tracked for the crate to build.
 !assets/reference_tile.jpg
+# ...and the bundled report font (same reason -- include_bytes!()'d).
+!assets/fonts/
+!assets/fonts/*
 
 settings.json
