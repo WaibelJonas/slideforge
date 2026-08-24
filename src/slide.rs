@@ -338,7 +338,7 @@ impl Slide {
                 .metadata
                 .best_level_for_target_mpp(*target)
                 .ok_or(WsiError::InvalidMetadata),
-            None => return Err(WsiError::InvalidMetadata),
+            None => Err(WsiError::InvalidMetadata),
         }
     }
 
@@ -410,10 +410,7 @@ impl Slide {
         // When `outputs.report_path` is set, build a `ReportCollector` and
         // add it to the observer chain (needs a DualObserver setup if
         // there's already a different observer)
-        let report_collector = match &outputs.report_path {
-            Some(_) => Some(Arc::new(ReportCollector::new())),
-            None => None,
-        };
+        let report_collector = outputs.report_path.as_ref().map(|_| Arc::new(ReportCollector::new()));
         let effective_observer: Option<Arc<dyn ExtractionObserver>> =
             match (&options.observer, &report_collector) {
                 (Some(existing), Some(collector)) => {
@@ -517,8 +514,8 @@ impl Slide {
             }
         };
 
-        if options.min_tissue_fraction.is_some() {
-            if let Some(observer) = &effective_observer {
+        if options.min_tissue_fraction.is_some()
+            && let Some(observer) = &effective_observer {
                 observer.on_extraction_complete(
                     level_idx,
                     ExtractionStats {
@@ -527,14 +524,12 @@ impl Slide {
                     },
                 );
             }
-        }
 
         // Only on success => produce a `.pdf` report
-        if result.is_ok() {
-            if let (Some(path), Some(collector)) = (&outputs.report_path, &report_collector) {
+        if result.is_ok()
+            && let (Some(path), Some(collector)) = (&outputs.report_path, &report_collector) {
                 collector.report(options).write_pdf(self, path)?;
             }
-        }
 
         result
     }

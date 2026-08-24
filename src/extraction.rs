@@ -9,8 +9,10 @@ use crate::logging::{DualObserver, ExtractionObserver};
 /// Governs whether tiles are processed sequentially or concurrently across
 /// multiple threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum Parallelism {
     /// Decode and process tiles seuqnetially.
+    #[default]
     Sequential,
     /// Decode and process tiles concurrently.
     ///
@@ -19,11 +21,6 @@ pub enum Parallelism {
     Parallel(Option<usize>),
 }
 
-impl Default for Parallelism {
-    fn default() -> Self {
-        Self::Sequential
-    }
-}
 
 // Governs the resolution level at which to extract tiles.
 #[derive(Debug, Clone, Copy)]

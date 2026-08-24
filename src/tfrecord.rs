@@ -37,7 +37,7 @@ use crate::error::WsiError;
 /// The masked CRC32C of `bytes` as a [`u32`].
 fn masked_crc32c(bytes: &[u8]) -> u32 {
     let crc = crc32c(bytes);
-    ((crc >> 15) | (crc << 17)).wrapping_add(0xa282ead8)
+    crc.rotate_right(15).wrapping_add(0xa282ead8)
 }
 
 /// Writes a stream of TFRecord-framed records to `writer`.
@@ -63,11 +63,11 @@ impl<W: Write> TfRecordWriter<W> {
     pub fn write_record(&mut self, data: &[u8]) -> Result<(), WsiError> {
         let length = (data.len() as u64).to_le_bytes();
         let masked_crc_length = masked_crc32c(&length).to_le_bytes();
-        let masked_crc_data = masked_crc32c(&data).to_le_bytes();
+        let masked_crc_data = masked_crc32c(data).to_le_bytes();
 
         self.writer.write_all(&length)?;
         self.writer.write_all(&masked_crc_length)?;
-        self.writer.write_all(&data)?;
+        self.writer.write_all(data)?;
         self.writer.write_all(&masked_crc_data)?;
         Ok(())
     }
@@ -192,7 +192,7 @@ mod tests {
     /// there's no public need for it beyond this test.
     fn unmask(masked: u32) -> u32 {
         let rot = masked.wrapping_sub(0xa282ead8);
-        (rot >> 17) | (rot << 15)
+        rot.rotate_left(15)
     }
 
     #[test]

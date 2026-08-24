@@ -126,9 +126,9 @@ impl TileDirectory {
 
         Ok(TileDirectory {
             offsets: tile_offsets,
-            byte_counts: byte_counts,
-            jpeg_tables: jpeg_tables,
-            photometric: photometric,
+            byte_counts,
+            jpeg_tables,
+            photometric,
         })
     }
 
@@ -218,10 +218,10 @@ impl Tile {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), WsiError> {
-        Ok(self
+        self
             .image
             .save(path)
-            .map_err(|_| WsiError::UnsupportedFormat)?)
+            .map_err(|_| WsiError::UnsupportedFormat)
     }
 
     pub fn tile_x(&self) -> u32 {
@@ -299,8 +299,8 @@ fn read_u64_list(value: &Value) -> Result<Vec<u64>, WsiError> {
         Value::List(values) => values
             .iter()
             .map(|v| match v {
-                Value::Unsigned(v) => return Ok(*v as u64),
-                _ => return Err(WsiError::UnsupportedFormat),
+                Value::Unsigned(v) => Ok(*v as u64),
+                _ => Err(WsiError::UnsupportedFormat),
             })
             .collect(),
         _ => Err(WsiError::UnsupportedFormat),
@@ -314,8 +314,8 @@ fn read_u8_list(value: &Value) -> Result<Vec<u8>, WsiError> {
         Value::List(values) => values
             .iter()
             .map(|v| match v {
-                Value::Byte(v) => return Ok(*v),
-                _ => return Err(WsiError::UnsupportedFormat),
+                Value::Byte(v) => Ok(*v),
+                _ => Err(WsiError::UnsupportedFormat),
             })
             .collect(),
         _ => Err(WsiError::UnsupportedFormat),

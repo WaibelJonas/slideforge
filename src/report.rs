@@ -319,6 +319,7 @@ impl ExtractionReport {
         left_y.min(right_y) - 6.0
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_kept_tile_grid(
         ops: &mut Vec<Op>,
         tile_positions: &[(u32, u32, bool)],
