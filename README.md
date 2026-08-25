@@ -1,6 +1,6 @@
 # Slideforge
 
-![Whole-slide overview, and the same overview with tissue-filter-kept tiles outlined in green](.github/hero.png)
+![Whole-slide overview, and the same overview with tissue-filter-kept tiles outlined in green](docs/hero.png)
 
 ![CI](https://github.com/WaibelJonas/slideforge/actions/workflows/ci.yml/badge.svg)
 
