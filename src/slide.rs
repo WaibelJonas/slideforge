@@ -540,7 +540,7 @@ impl Slide {
     }
 
     /// Stitches lowest-resolution pyramid level into a single image for use as a thumbnail.
-    pub(crate) fn build_overview_image(&self) -> Result<DynamicImage, WsiError> {
+    pub fn build_overview_image(&self) -> Result<DynamicImage, WsiError> {
         let level_idx = self.level_count() - 1;
         let level = self
             .metadata

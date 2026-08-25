@@ -1,5 +1,7 @@
 # Slideforge
 
+![Whole-slide overview, and the same overview with tissue-filter-kept tiles outlined in green](.github/hero.png)
+
 ![CI](https://github.com/WaibelJonas/slideforge/actions/workflows/ci.yml/badge.svg)
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
