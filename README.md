@@ -4,11 +4,9 @@
 
 ![CI](https://github.com/WaibelJonas/slideforge/actions/workflows/ci.yml/badge.svg)
 
-[![Version](https://img.shields.io/github/v/tag/WaibelJonas/slideforge?label=version)](https://github.com/WaibelJonas/slideforge/releases)
-
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-[![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange)](https://www.rust-lang.org)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
 
 ---
 
@@ -25,6 +23,13 @@ Slideforge is a lightweight, open-source library for tile extraction on Whole Sl
 - PDF extraction reports, for a single slide or an entire dataset
 - Batch processing over a whole directory of slides
 - Cross-platform support for Linux, macOS, and Windows
+
+## Planned
+
+- Additional tissue filtering and stain normalization methods beyond Otsu thresholding and Reinhard normalization
+- Broader unit test coverage for the entire project
+- Publish to crates.io, with generated documentation on docs.rs
+- Python integration for downstream ML pipelines (e.g. a thin CLI wrapper), evaluated on an experimental branch of [AutoMIL](https://github.com/frankkramer-lab/AutoMIL)
 
 ## Getting Started
 
@@ -65,7 +70,7 @@ always written alongside (default: `<slide-stem>.tfrecord`, override with
 
     slideforge dataset ./slides ./output --target-mpp 0.5 --min-tissue-fraction 0.1 --report dataset_report.pdf
 
-The above example extracts tiles from all slides in `./slides`, in the same manner as the single-slide example, and writes a PDF report for the entire dataset. As with `extract`, a `.tfrecord` is always written per slide, under `./output/<slide-stem>/<slide-stem>.tfrecord`; loose `.jpg` tiles are opt-in via `--tiles`.
+The above example extracts tiles from all slides in `./slides`, in the same manner as the single-slide example, and writes a PDF report for the entire dataset. As with `extract`, a `.tfrecord` is always written per slide, under `./output/<slide-stem>/<slide-stem>.tfrecord`, loose `.jpg` tiles are opt-in via `--tiles`.
 
 ### Library
 
