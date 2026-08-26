@@ -23,7 +23,7 @@ impl JpegDecoder {
     ///
     /// The supplied reader must yield a complete JPEG bitstream. For TIFF images
     /// using abbreviated JPEG streams (such as Aperio SVS), this is typically
-    /// obtained from [`TileDirectory::jpeg_reader`].
+    /// obtained from [`TileDirectory::jpeg_reader`](crate::tile::TileDirectory::jpeg_reader).
     ///
     /// The TIFF photometric interpretation is used to configure the JPEG decoder's
     /// color transform. This is required because the JPEG codestream alone does

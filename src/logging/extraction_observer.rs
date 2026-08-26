@@ -172,7 +172,7 @@ impl ExtractionObserver for ProgressBar {
 /// An [`ExtractionObserver`] that collects summary counts, per-tile
 /// keep/drop positions, dropped-tile tissue fractions, timing and a
 /// handful of example tile thumbnails, for building an
-/// [`ExtractionReport`](crate::report::ExtractionReport) via [`ReportCollector::report`].
+/// [`ExtractionReport`] via [`ReportCollector::report`].
 ///
 /// Typically shared between the extraction call and the caller via `Arc`
 /// (e.g. `ExtractionOptions::with_shared_observer`), so its methods take

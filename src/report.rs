@@ -1,8 +1,8 @@
 //! Extraction report generation.
 //!
-//! Collects summary data from a
-//! [`Slide::extract_with_report`](crate::slide::Slide::extract_with_report)
-//! run and renders it to a single-page PDF via [`ExtractionReport::write_pdf`].
+//! Collects summary data from a [`Slide::extract`](crate::slide::Slide::extract)
+//! run (via [`ReportCollector`](crate::logging::ReportCollector)) and renders
+//! it to a single-page PDF via [`ExtractionReport::write_pdf`].
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -107,8 +107,7 @@ impl SlideSummary {
     }
 }
 
-/// Summary of a completed
-/// [`Slide::extract_with_report`](crate::slide::Slide::extract_with_report)
+/// Summary of a completed [`Slide::extract`](crate::slide::Slide::extract)
 /// run: tile counts, timing, the pipeline configuration used, and sampled
 /// data (tile positions, dropped-tile tissue fractions, example
 /// thumbnails), for rendering an extraction report PDF via
@@ -171,8 +170,8 @@ impl ExtractionReport {
     /// Renders this report as a single-page PDF at `path`.
     ///
     /// `slide` must be the same [`Slide`] the report was generated from
-    /// (via [`Slide::extract_with_report`]); it's used to build the
-    /// overview image and to look up level dimensions for the tile grid.
+    /// (via [`Slide::extract`]); it's used to build the overview image and
+    /// to look up level dimensions for the tile grid.
     pub fn write_pdf(&self, slide: &Slide, path: impl AsRef<Path>) -> Result<(), WsiError> {
         let mut font_warnings = Vec::new();
         let font =

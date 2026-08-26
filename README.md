@@ -4,13 +4,15 @@
 
 ![CI](https://github.com/WaibelJonas/slideforge/actions/workflows/ci.yml/badge.svg)
 
+[![Version](https://img.shields.io/github/v/tag/WaibelJonas/slideforge?label=version)](https://github.com/WaibelJonas/slideforge/releases)
+
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 [![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange)](https://www.rust-lang.org)
 
 ---
 
-Slideforge is a lightweight, open-source library for tile extraction on Whole Slide Images (WSI) written in Rust. It utilizes features inherent to Rust, such as memory safety and concurrency, to provide fast and efficient tile extraction. Additionally, it implements basic slide preprocessing techniques, such as tissue detection and color normalization, to enhance the quality of extracted tiles. Slideforge aims to be easily integrable into existing projects, pipelines, and workflows, and is available on both Linux and Windows platforms.
+Slideforge is a lightweight, open-source library for tile extraction on Whole Slide Images (WSI) written in Rust. It utilizes features inherent to Rust, such as memory safety and concurrency, to provide fast and efficient tile extraction. Additionally, it implements basic slide preprocessing techniques, such as tissue detection and color normalization, to enhance the quality of extracted tiles. Slideforge aims to be easily integrable into existing projects, pipelines, and workflows, and is available on Linux, macOS, and Windows.
 
 ## Features
 
@@ -22,7 +24,7 @@ Slideforge is a lightweight, open-source library for tile extraction on Whole Sl
 - Tile output in JPEG format or serialized as a TensorFlow TFRecord file
 - PDF extraction reports, for a single slide or an entire dataset
 - Batch processing over a whole directory of slides
-- Cross-platform support for Linux and Windows
+- Cross-platform support for Linux, macOS, and Windows
 
 ## Getting Started
 
@@ -32,7 +34,10 @@ This section provides an overview of how to get started with Slideforge, using e
 
 Slideforge isn't published on crates.io (yet ;)) but can be installed via Github.
 
-As a CLI:
+The easiest way to get the CLI is to download a prebuilt binary from the
+[Releases page](https://github.com/WaibelJonas/slideforge/releases). Windows, macOS (Intel + Apple Silicon), and Linux builds vor **v.0.1.0** are currently published.
+
+Alternatively, you can build Slideforge yourself with cargo:
 
     cargo install --git https://github.com/WaibelJonas/slideforge
 
@@ -60,7 +65,7 @@ always written alongside (default: `<slide-stem>.tfrecord`, override with
 
     slideforge dataset ./slides ./output --target-mpp 0.5 --min-tissue-fraction 0.1 --report dataset_report.pdf
 
-The above example extracts tiles from all slides in `./slides`, in the same manner as the single-slide example, and writes a PDF report for the entire dataset.
+The above example extracts tiles from all slides in `./slides`, in the same manner as the single-slide example, and writes a PDF report for the entire dataset. As with `extract`, a `.tfrecord` is always written per slide, under `./output/<slide-stem>/<slide-stem>.tfrecord`; loose `.jpg` tiles are opt-in via `--tiles`.
 
 ### Library
 
@@ -76,8 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_min_tissue_fraction(0.1)
         .with_stain_normalization();
 
+    // Governs output channels
     let outputs = SlideOutputs::default().with_tile_dir("tiles/");
 
+    // Closure defines additional behaviour
     slide.extract(&options, &outputs, |tile| {
         println!("kept tile ({}, {})", tile.tile_x(), tile.tile_y());
         Ok(())
@@ -106,7 +113,7 @@ For more information on the Aperio SVS file format, please refer to the followin
 - [Aperio SVS File Format](https://openslide.org/formats/aperio-svs/)
 - [OpenSlide](https://openslide.org/)
 
-The reference tile that serves as a target for stain normalization is taken from the WSI `TCGA-B9EB312E82F6` from the [The Cancer Genome Atlas (TCGA)](https://www.cancer.gov/about-nci/organization/ccg/research/structural-genomics/tcga)
+The reference tile that serves as a target for stain normalization is taken from the WSI `TCGA-B9EB312E82F6` from [The Cancer Genome Atlas (TCGA)](https://www.cancer.gov/about-nci/organization/ccg/research/structural-genomics/tcga)
 
 ## License
 

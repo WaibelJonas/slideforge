@@ -49,4 +49,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### ⚙️ Miscellaneous Tasks
 
 - Added workflow for cargo fmt/clippy/test
-- Added a cross-platfrom release workflow
+- Added a cross-platform release workflow

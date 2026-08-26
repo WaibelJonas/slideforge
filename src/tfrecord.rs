@@ -10,7 +10,7 @@
 //! - The byte data payload
 //! - The masked CRC32C hash of the byte data payload
 //!
-//! For each tile, [`tile_record`] assembles the four features Slideflow's own
+//! For each tile, `tile_record` assembles the four features Slideflow's own
 //! writes (`slide`, `image_raw`, `loc_x`, `loc_y`) to the [`TfRecordWriter`]
 //!
 //! # Sources
