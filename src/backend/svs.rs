@@ -337,3 +337,63 @@ pub fn parse_slide(path: &Path) -> Result<ParsedSlide, WsiError> {
         tile_directories,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_ifd_detects_label_regardless_of_case() {
+        assert_eq!(
+            classify_ifd(
+                "Aperio Image Library LABEL 100x100",
+                Some(&TileSize::new(240, 240))
+            ),
+            ImageKind::Label
+        );
+    }
+
+    #[test]
+    fn classify_ifd_detects_macro() {
+        assert_eq!(classify_ifd("macro image", None), ImageKind::Macro);
+    }
+
+    #[test]
+    fn classify_ifd_treats_tiled_untagged_images_as_pyramid_levels() {
+        assert_eq!(
+            classify_ifd("", Some(&TileSize::new(240, 240))),
+            ImageKind::PyramidLevel
+        );
+    }
+
+    #[test]
+    fn classify_ifd_treats_untiled_untagged_images_as_thumbnails() {
+        assert_eq!(classify_ifd("", None), ImageKind::Thumbnail);
+    }
+
+    #[test]
+    fn parse_aperio_metadata_extracts_known_fields() {
+        let description = "Aperio Image Library v1.0|AppMag = 20|MPP = 0.4990|Other = ignored";
+
+        let metadata = parse_aperio_metadata(description);
+
+        assert_eq!(metadata.objective_power, Some(20.0));
+        assert_eq!(metadata.microns_per_pixel, Some(0.4990));
+    }
+
+    #[test]
+    fn parse_aperio_metadata_leaves_missing_fields_as_none() {
+        let metadata = parse_aperio_metadata("Aperio Image Library v1.0|MPP = 0.25");
+
+        assert_eq!(metadata.objective_power, None);
+        assert_eq!(metadata.microns_per_pixel, Some(0.25));
+    }
+
+    #[test]
+    fn parse_aperio_metadata_ignores_unparseable_values() {
+        let metadata = parse_aperio_metadata("AppMag = not-a-number|MPP = 0.25");
+
+        assert_eq!(metadata.objective_power, None);
+        assert_eq!(metadata.microns_per_pixel, Some(0.25));
+    }
+}

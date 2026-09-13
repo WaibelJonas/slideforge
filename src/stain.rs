@@ -182,3 +182,59 @@ pub fn normalize_reinhard(image: &DynamicImage) -> DynamicImage {
 
     DynamicImage::ImageRgb8(output)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn srgb_linear_round_trips_at_the_extremes() {
+        assert!((srgb_to_linear(0.0) - 0.0).abs() < 1e-9);
+        assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-9);
+        assert!((linear_to_srgb(0.0) - 0.0).abs() < 1e-9);
+        assert!((linear_to_srgb(1.0) - 1.0).abs() < 1e-9);
+
+        for c in [0.02, 0.2, 0.5, 0.9] {
+            let round_tripped = linear_to_srgb(srgb_to_linear(c));
+            assert!((round_tripped - c).abs() < 1e-6, "c={c}");
+        }
+    }
+
+    #[test]
+    fn rgb_to_lab_round_trips_within_rounding_tolerance() {
+        for pixel in [
+            Rgb([0, 0, 0]),
+            Rgb([255, 255, 255]),
+            Rgb([200, 50, 50]),
+            Rgb([30, 180, 90]),
+        ] {
+            let lab = rgb_to_lab(pixel);
+            let round_tripped = lab_to_rgb(lab);
+
+            for c in 0..3 {
+                let diff = (round_tripped.0[c] as i16 - pixel.0[c] as i16).abs();
+                assert!(diff <= 1, "pixel={pixel:?} round_tripped={round_tripped:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn lab_mean_std_matches_hand_computed_values() {
+        let pixels = [[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]];
+
+        let (mean, std) = lab_mean_std(&pixels);
+
+        assert_eq!(mean, [1.0, 1.0, 1.0]);
+        assert_eq!(std, [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn normalize_reinhard_preserves_image_dimensions() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(4, 3, Rgb([120, 80, 60])));
+
+        let normalized = normalize_reinhard(&image);
+
+        assert_eq!(normalized.width(), 4);
+        assert_eq!(normalized.height(), 3);
+    }
+}

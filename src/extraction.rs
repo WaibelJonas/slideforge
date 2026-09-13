@@ -173,3 +173,65 @@ impl ExtractionOptions {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct CountingObserver(AtomicUsize);
+
+    impl ExtractionObserver for CountingObserver {
+        fn on_extraction_start(&self, _level_idx: usize, _total_tiles: usize) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn sequential_and_parallel_constructors_set_expected_defaults() {
+        assert_eq!(
+            ExtractionOptions::sequential().parallelism,
+            Parallelism::Sequential
+        );
+        assert_eq!(
+            ExtractionOptions::parallel().parallelism,
+            Parallelism::Parallel(None)
+        );
+        assert_eq!(
+            ExtractionOptions::parallel_with_threads(4).parallelism,
+            Parallelism::Parallel(Some(4))
+        );
+    }
+
+    #[test]
+    fn with_level_and_with_target_mpp_overwrite_each_other() {
+        let options = ExtractionOptions::sequential()
+            .with_level(2)
+            .with_target_mpp(0.5);
+
+        assert!(matches!(
+            options.extraction_level,
+            Some(ExtractionLevel::TargetMpp(mpp)) if mpp == 0.5
+        ));
+    }
+
+    #[test]
+    fn chained_observers_all_receive_events() {
+        let first = Arc::new(CountingObserver::default());
+        let second = Arc::new(CountingObserver::default());
+
+        let options = ExtractionOptions::sequential()
+            .with_shared_observer(first.clone())
+            .with_shared_observer(second.clone());
+
+        options
+            .observer
+            .as_ref()
+            .expect("observer should be set")
+            .on_extraction_start(0, 10);
+
+        assert_eq!(first.0.load(Ordering::Relaxed), 1);
+        assert_eq!(second.0.load(Ordering::Relaxed), 1);
+    }
+}

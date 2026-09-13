@@ -265,3 +265,71 @@ impl Metadata {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn level(index: u32, downsample_factor: f64) -> Level {
+        Level::new(
+            index,
+            Dimensions::new(100, 100),
+            TileSize::new(30, 30),
+            downsample_factor,
+        )
+    }
+
+    #[test]
+    fn tiles_x_and_y_round_up_to_cover_the_level() {
+        let exact = Level::new(0, Dimensions::new(90, 60), TileSize::new(30, 30), 1.0);
+        assert_eq!(exact.tiles_x(), 3);
+        assert_eq!(exact.tiles_y(), 2);
+
+        let remainder = Level::new(0, Dimensions::new(100, 100), TileSize::new(30, 30), 1.0);
+        assert_eq!(remainder.tiles_x(), 4);
+        assert_eq!(remainder.tiles_y(), 4);
+    }
+
+    #[test]
+    fn valid_tile_dimensions_are_full_size_in_the_interior() {
+        let level = Level::new(0, Dimensions::new(100, 100), TileSize::new(30, 30), 1.0);
+        assert_eq!(level.valid_tile_dimensions(0, 0), (30, 30));
+    }
+
+    #[test]
+    fn valid_tile_dimensions_are_clipped_at_the_boundary() {
+        let level = Level::new(0, Dimensions::new(100, 100), TileSize::new(30, 30), 1.0);
+        // Last tile column/row starts at 90, but the level is only 100 wide/tall.
+        assert_eq!(level.valid_tile_dimensions(3, 3), (10, 10));
+    }
+
+    #[test]
+    fn best_level_for_target_mpp_is_none_without_a_base_mpp() {
+        let metadata = Metadata::new(vec![level(0, 1.0)], None, None);
+        assert_eq!(metadata.best_level_for_target_mpp(0.5), None);
+    }
+
+    #[test]
+    fn best_level_for_target_mpp_picks_the_coarsest_qualifying_level() {
+        // base_mpp = 0.25 => level mpp is 0.25, 0.5, 1.0
+        let metadata = Metadata::new(
+            vec![level(0, 1.0), level(1, 2.0), level(2, 4.0)],
+            Some(20.0),
+            Some(0.25),
+        );
+
+        assert_eq!(metadata.best_level_for_target_mpp(0.6), Some(1));
+    }
+
+    #[test]
+    fn best_level_for_target_mpp_falls_back_to_the_finest_level() {
+        let metadata = Metadata::new(
+            vec![level(0, 1.0), level(1, 2.0), level(2, 4.0)],
+            Some(20.0),
+            Some(0.25),
+        );
+
+        // No level is fine enough for this target, so the finest level wins.
+        assert_eq!(metadata.best_level_for_target_mpp(0.1), Some(0));
+    }
+}

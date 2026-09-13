@@ -136,3 +136,62 @@ impl TissueMask {
         self.tissue_fraction >= min_tissue_fraction
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{GrayImage, Rgb, RgbImage};
+
+    #[test]
+    fn grayscale_histogram_counts_each_intensity() {
+        let mut image = GrayImage::new(2, 2);
+        image.put_pixel(0, 0, image::Luma([0]));
+        image.put_pixel(1, 0, image::Luma([0]));
+        image.put_pixel(0, 1, image::Luma([128]));
+        image.put_pixel(1, 1, image::Luma([255]));
+
+        let histogram = grayscale_histogram(&image);
+
+        assert_eq!(histogram[0], 2);
+        assert_eq!(histogram[128], 1);
+        assert_eq!(histogram[255], 1);
+        assert_eq!(histogram.iter().sum::<u32>(), 4);
+    }
+
+    #[test]
+    fn otsu_threshold_from_empty_histogram_is_zero() {
+        let histogram = [0u32; 256];
+        assert_eq!(otsu_threshold_from_histogram(&histogram), 0);
+    }
+
+    #[test]
+    fn otsu_threshold_splits_bimodal_histogram() {
+        let mut histogram = [0u32; 256];
+        histogram[50] = 100;
+        histogram[200] = 100;
+
+        // Inter-class variance is maximized as soon as the split separates
+        // the two spikes, and stays flat for every split in between (ties
+        // don't overwrite), so the first such split -- immediately after
+        // the low spike -- wins.
+        assert_eq!(otsu_threshold_from_histogram(&histogram), 50);
+    }
+
+    #[test]
+    fn tissue_mask_computes_fraction_below_threshold() {
+        let mut image = RgbImage::new(2, 2);
+        // Two dark ("tissue") pixels, two bright ("background") pixels.
+        image.put_pixel(0, 0, Rgb([0, 0, 0]));
+        image.put_pixel(1, 0, Rgb([0, 0, 0]));
+        image.put_pixel(0, 1, Rgb([255, 255, 255]));
+        image.put_pixel(1, 1, Rgb([255, 255, 255]));
+        let image = DynamicImage::ImageRgb8(image);
+
+        let mask = TissueMask::compute_with_threshold(&image, 127);
+
+        assert_eq!(mask.threshold(), 127);
+        assert_eq!(mask.tissue_fraction(), 0.5);
+        assert!(mask.has_more_than_min_tissue(0.5));
+        assert!(!mask.has_more_than_min_tissue(0.51));
+    }
+}
