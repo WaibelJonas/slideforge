@@ -2,11 +2,44 @@
 name = "slideforge"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+
+description = "Fast whole-slide image (WSI) tile extraction in Rust, with tissue detection, stain normalization, and TFRecord output."
+authors = ["Jonas Waibel <Waibel.Jonas@kabelmail.de>"]
+license = "GPL-3.0-or-later"
+readme = "README.md"
+
+repository = "https://github.com/WaibelJonas/slideforge"
+homepage = "https://github.com/WaibelJonas/slideforge"
+documentation = "https://docs.rs/slideforge"
+
+keywords = ["wsi", "pathology", "histology", "svs", "tiff"]
+categories = ["science", "multimedia::images", "command-line-utilities"]
+
+exclude = [
+    "docs/",
+    "README.pdf",
+    ".github/",
+    "cliff.toml",
+]
+
+[features]
+default = ["cli"]
+# The `slideforge` binary. Disable with `default-features = false` to use
+# slideforge as a library without pulling in clap or env_logger.
+cli = ["dep:clap", "dep:env_logger"]
+
+[[bin]]
+name = "slideforge"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[lib]
+name = "slideforge"
+path = "src/lib.rs"
 
 [dependencies]
-clap = { version = "4.6.6", features = ["derive"] }
 crc32c = "0.6.8"
-env_logger = "0.11.11"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 jpeg-decoder = "0.3.2"
 log = "0.4.28"
@@ -14,3 +47,11 @@ printpdf = { version = "0.12.5", default-features = false, features = ["images"]
 rayon = "1.12.0"
 thiserror = "2.0.19"
 tiff = "0.11.3"
+
+clap = { version = "4.6.6", features = ["derive"], optional = true }
+env_logger = { version = "0.11.11", optional = true }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

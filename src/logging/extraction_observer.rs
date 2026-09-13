@@ -325,7 +325,7 @@ impl ExtractionObserver for ReportCollector {
         // to know the final kept-tile count in advance. `report()` does a
         // final downsample to exactly `MAX_SAMPLE_TILES`.
         let idx = self.tiles_seen.fetch_add(1, Ordering::Relaxed);
-        if idx.is_multiple_of(self.sample_stride.load(Ordering::Relaxed)) {
+        if idx % self.sample_stride.load(Ordering::Relaxed) == 0 {
             let mut samples = self.samples.lock().expect("Mutex lock failed!");
             let thumbnail = tile
                 .image()
