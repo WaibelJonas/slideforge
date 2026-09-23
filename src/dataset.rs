@@ -79,6 +79,9 @@ impl Dataset {
 
         let mut summaries = Vec::new();
         let mut failures = Vec::new();
+        let mut succeeded = 0usize;
+        let mut total_kept = 0usize;
+        let mut total_dropped = 0usize;
 
         for path in &self.paths {
             let slide = match Slide::open(path) {
@@ -113,21 +116,18 @@ impl Dataset {
                 report_path: None,
             };
 
-            // When `outputs.report_path` is set, build a `ReportCollector`
-            // and add it to the observer chain
-            let collector = outputs
-                .report_path
-                .is_some()
-                .then(|| Arc::new(ReportCollector::new()));
-            let mut slide_options = options.clone();
-            if let Some(c) = &collector {
-                slide_options = slide_options.with_shared_observer(c.clone())
-            }
+            // Cheap; always attached so kept/dropped stay accurate without a report.
+            let collector = Arc::new(ReportCollector::new());
+            let slide_options = options.clone().with_shared_observer(collector.clone());
 
             match slide.extract(&slide_options, &slide_outputs, |tile| f(&slide, tile)) {
                 Ok(_) => {
-                    // Only on success => capture and collect stats for later report
-                    if let Some(c) = &collector {
+                    succeeded += 1;
+                    total_kept += collector.kept();
+                    total_dropped += collector.dropped();
+
+                    // Overview stitching is expensive; only do it if a report was requested.
+                    if outputs.report_path.is_some() {
                         let level_idx =
                             slide.resolve_resolution_level(&slide_options.extraction_level)?;
                         let level = slide
@@ -138,10 +138,10 @@ impl Dataset {
 
                         summaries.push(SlideSummary::new(
                             file_stem.to_string(),
-                            c.kept(),
-                            c.dropped(),
+                            collector.kept(),
+                            collector.dropped(),
                             overview,
-                            c.tile_positions(),
+                            collector.tile_positions(),
                             (level.dimensions().width, level.dimensions().height),
                             (level.tile_size().width, level.tile_size().height),
                         ));
@@ -154,7 +154,15 @@ impl Dataset {
             }
         }
 
-        let report = DatasetReport::new(summaries, failures, options, start.elapsed());
+        let report = DatasetReport::new(
+            summaries,
+            failures,
+            options,
+            start.elapsed(),
+            succeeded,
+            total_kept,
+            total_dropped,
+        );
         if let Some(path) = &outputs.report_path {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
@@ -162,5 +170,193 @@ impl Dataset {
             report.write_pdf(path)?;
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// See `tests/fixtures/README.md` for provenance.
+    const FIXTURE: &str = "tests/fixtures/CMU-1-Small-Region.svs";
+
+    /// Copies the fixture into `dir` `count` times, as `slide_N.svs`.
+    fn populate_with_fixture_copies(dir: &Path, count: usize) {
+        for i in 0..count {
+            fs::copy(FIXTURE, dir.join(format!("slide_{i}.svs"))).unwrap();
+        }
+    }
+
+    #[test]
+    fn from_dir_picks_up_only_svs_files_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::copy(FIXTURE, dir.path().join("a.svs")).unwrap();
+        fs::copy(FIXTURE, dir.path().join("b.SVS")).unwrap();
+        fs::write(dir.path().join("notes.txt"), b"not a slide").unwrap();
+
+        let dataset = Dataset::from_dir(dir.path()).unwrap();
+        assert_eq!(dataset.len(), 2);
+    }
+
+    #[test]
+    fn from_dir_on_empty_directory_is_empty_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let dataset = Dataset::from_dir(dir.path()).unwrap();
+        assert!(dataset.is_empty());
+        assert_eq!(dataset.len(), 0);
+    }
+
+    #[test]
+    fn from_paths_uses_the_given_paths_directly() {
+        let dataset = Dataset::from_paths(vec![PathBuf::from("a.svs"), PathBuf::from("b.svs")]);
+        assert_eq!(dataset.len(), 2);
+        assert_eq!(dataset.paths().len(), 2);
+    }
+
+    #[test]
+    fn extract_processes_every_slide_and_invokes_the_callback_per_kept_tile() {
+        let input_dir = tempfile::tempdir().unwrap();
+        populate_with_fixture_copies(input_dir.path(), 2);
+        let dataset = Dataset::from_dir(input_dir.path()).unwrap();
+        assert_eq!(dataset.len(), 2);
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let options = ExtractionOptions::sequential().with_level(0);
+
+        let callback_calls = AtomicUsize::new(0);
+        let report = dataset
+            .extract(
+                &options,
+                output_dir.path(),
+                DatasetOutputs::default(),
+                |_slide, _tile| {
+                    callback_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.total_slides(), 2);
+        assert_eq!(report.succeeded(), 2);
+
+        let tiles_per_slide = Slide::open(FIXTURE)
+            .unwrap()
+            .tile_coords(0)
+            .unwrap()
+            .count();
+        assert_eq!(callback_calls.load(Ordering::Relaxed), tiles_per_slide * 2);
+    }
+
+    #[test]
+    fn extract_writes_per_slide_tiles_and_tfrecords_under_their_own_directories() {
+        let input_dir = tempfile::tempdir().unwrap();
+        populate_with_fixture_copies(input_dir.path(), 1);
+        let dataset = Dataset::from_dir(input_dir.path()).unwrap();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let options = ExtractionOptions::sequential().with_level(0);
+        let outputs = DatasetOutputs {
+            tiles: true,
+            tfrecords: true,
+            ..Default::default()
+        };
+
+        dataset
+            .extract(&options, output_dir.path(), outputs, |_slide, _tile| Ok(()))
+            .unwrap();
+
+        let slide_dir = output_dir.path().join("slide_0");
+        assert!(slide_dir.join("slide_0.tfrecord").is_file());
+
+        let expected_tiles = Slide::open(FIXTURE)
+            .unwrap()
+            .tile_coords(0)
+            .unwrap()
+            .count();
+        let written_tiles = fs::read_dir(&slide_dir)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "jpg")
+            })
+            .count();
+        assert_eq!(written_tiles, expected_tiles);
+    }
+
+    #[test]
+    fn extract_respects_tile_subdir() {
+        let input_dir = tempfile::tempdir().unwrap();
+        populate_with_fixture_copies(input_dir.path(), 1);
+        let dataset = Dataset::from_dir(input_dir.path()).unwrap();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let options = ExtractionOptions::sequential().with_level(0);
+        let outputs = DatasetOutputs {
+            tiles: true,
+            tile_subdir: Some(PathBuf::from("tiles")),
+            ..Default::default()
+        };
+
+        dataset
+            .extract(&options, output_dir.path(), outputs, |_slide, _tile| Ok(()))
+            .unwrap();
+
+        let tile_subdir = output_dir.path().join("slide_0").join("tiles");
+        assert!(tile_subdir.is_dir());
+        assert!(fs::read_dir(&tile_subdir).unwrap().count() > 0);
+    }
+
+    #[test]
+    fn extract_skips_unopenable_slides_without_aborting_the_batch() {
+        let input_dir = tempfile::tempdir().unwrap();
+        populate_with_fixture_copies(input_dir.path(), 1);
+        fs::write(input_dir.path().join("corrupt.svs"), b"not a real tiff").unwrap();
+
+        let dataset = Dataset::from_dir(input_dir.path()).unwrap();
+        assert_eq!(dataset.len(), 2, "both files are picked up by extension");
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let options = ExtractionOptions::sequential().with_level(0);
+
+        let report = dataset
+            .extract(
+                &options,
+                output_dir.path(),
+                DatasetOutputs::default(),
+                |_slide, _tile| Ok(()),
+            )
+            .unwrap();
+
+        // Open failures are skipped entirely, not counted as failures.
+        assert_eq!(report.succeeded(), 1);
+        assert_eq!(report.total_slides(), 1);
+    }
+
+    #[test]
+    fn extract_writes_a_combined_report_when_report_path_is_set() {
+        let input_dir = tempfile::tempdir().unwrap();
+        populate_with_fixture_copies(input_dir.path(), 2);
+        let dataset = Dataset::from_dir(input_dir.path()).unwrap();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let report_path = output_dir.path().join("combined.pdf");
+        let options = ExtractionOptions::sequential().with_level(0);
+        let outputs = DatasetOutputs {
+            report_path: Some(report_path.clone()),
+            ..Default::default()
+        };
+
+        dataset
+            .extract(&options, output_dir.path(), outputs, |_slide, _tile| Ok(()))
+            .unwrap();
+
+        let bytes = fs::read(&report_path).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
     }
 }

@@ -51,6 +51,9 @@ tiff = "0.11.3"
 clap = { version = "4.6.6", features = ["derive"], optional = true }
 env_logger = { version = "0.11.11", optional = true }
 
+[dev-dependencies]
+tempfile = "3.14"
+
 [profile.release]
 lto = true
 codegen-units = 1

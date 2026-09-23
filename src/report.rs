@@ -640,47 +640,59 @@ fn format_utc_now() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
 
-    format!(
+    let out = format!(
         "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
         secs_of_day / 3600,
         (secs_of_day % 3600) / 60,
         secs_of_day % 60
-    )
+    );
+    out
 }
 
 pub struct DatasetReport {
+    /// Per-slide detail for PDF rendering; only populated when a report is requested.
     slides: Vec<SlideSummary>,
     failures: Vec<(PathBuf, WsiError)>,
     options: OptionsSummary,
     elapsed: Duration,
+    succeeded: usize,
+    total_kept: usize,
+    total_dropped: usize,
 }
 
 impl DatasetReport {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         slides: Vec<SlideSummary>,
         failures: Vec<(PathBuf, WsiError)>,
         options: &ExtractionOptions,
         elapsed: Duration,
+        succeeded: usize,
+        total_kept: usize,
+        total_dropped: usize,
     ) -> Self {
         Self {
             slides,
             failures,
             options: OptionsSummary::from(options),
             elapsed,
+            succeeded,
+            total_kept,
+            total_dropped,
         }
     }
 
     pub fn total_slides(&self) -> usize {
-        self.slides.len() + self.failures.len()
+        self.succeeded + self.failures.len()
     }
     pub fn succeeded(&self) -> usize {
-        self.slides.len()
+        self.succeeded
     }
     pub fn total_kept(&self) -> usize {
-        self.slides.iter().map(|s| s.kept).sum()
+        self.total_kept
     }
     pub fn total_dropped(&self) -> usize {
-        self.slides.iter().map(|s| s.dropped).sum()
+        self.total_dropped
     }
 
     /// Renders this report as a multi-page PDF at `path`: a summary page

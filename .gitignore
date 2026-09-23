@@ -35,6 +35,10 @@ assets/*
 # ...and the bundled report font (same reason -- include_bytes!()'d).
 !assets/fonts/
 !assets/fonts/*
+# ...and the small (1.85MB), CC0-licensed OpenSlide test fixture used by
+# slide.rs/dataset.rs tests -- unlike the real test slide, small enough to
+# track directly. See tests/fixtures/README.md for provenance.
+!tests/fixtures/CMU-1-Small-Region.svs
 
 settings.json
 README.pdf

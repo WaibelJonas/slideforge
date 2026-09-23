@@ -1,3 +1,4 @@
+/// Representation of a single Whole Slide Image (WSI) along with its metadata.
 use crate::backend::svs::parse_slide;
 use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
@@ -9,7 +10,6 @@ use crate::tfrecord::TfRecordWriter;
 use crate::tile::{Tile, TileDirectory, read_tile_bytes, read_tile_bytes_at};
 use crate::{report, tfrecord};
 use image::{DynamicImage, RgbImage};
-/// Representation of a single Whole Slide Image (WSI) along with its metadata.
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::fs::File;
@@ -571,5 +571,197 @@ impl Slide {
         } else {
             overview
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// See `tests/fixtures/README.md` for provenance.
+    const FIXTURE: &str = "tests/fixtures/CMU-1-Small-Region.svs";
+
+    fn open_fixture() -> Slide {
+        Slide::open(FIXTURE).expect("fixture slide should open")
+    }
+
+    #[test]
+    fn open_reads_real_slide_metadata() {
+        let slide = open_fixture();
+        assert_eq!(slide.level_count(), 1);
+
+        let level = slide.metadata().level(0).unwrap();
+        assert_eq!(level.dimensions().width, 2220);
+        assert_eq!(level.dimensions().height, 2967);
+    }
+
+    #[test]
+    fn open_fails_on_missing_file() {
+        let result = Slide::open("tests/fixtures/does_not_exist.svs");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_tile_returns_expected_dimensions() {
+        let slide = open_fixture();
+        let tile = slide.decode_tile(0, 0, 0).unwrap();
+        assert_eq!(tile.image().width(), 240);
+        assert_eq!(tile.image().height(), 240);
+    }
+
+    #[test]
+    fn decode_tile_rejects_out_of_bounds_level() {
+        let slide = open_fixture();
+        let result = slide.decode_tile(5, 0, 0);
+        assert!(matches!(result, Err(WsiError::LevelIndexOutOfBounds)));
+    }
+
+    #[test]
+    fn decode_tile_rejects_out_of_bounds_tile_coord() {
+        let slide = open_fixture();
+        let level = slide.metadata().level(0).unwrap();
+        let result = slide.decode_tile(0, level.tiles_x(), 0);
+        assert!(matches!(result, Err(WsiError::TileIndexOutOfBounds)));
+    }
+
+    #[test]
+    fn extract_sequential_visits_every_tile_exactly_once() {
+        let slide = open_fixture();
+        let expected: HashSet<_> = slide.tile_coords(0).unwrap().collect();
+
+        let seen = Mutex::new(Vec::new());
+        let options = ExtractionOptions::sequential().with_level(0);
+        slide
+            .extract(&options, &SlideOutputs::default(), |tile| {
+                seen.lock().unwrap().push((tile.tile_x(), tile.tile_y()));
+                Ok(())
+            })
+            .unwrap();
+
+        let seen = seen.into_inner().unwrap();
+        let seen_set: HashSet<_> = seen.iter().copied().collect();
+        assert_eq!(seen.len(), expected.len(), "no duplicate or skipped tiles");
+        assert_eq!(seen_set, expected);
+    }
+
+    #[test]
+    fn extract_parallel_visits_every_tile_exactly_once() {
+        let slide = open_fixture();
+        let expected: HashSet<_> = slide.tile_coords(0).unwrap().collect();
+
+        let seen = Mutex::new(Vec::new());
+        let options = ExtractionOptions::parallel().with_level(0);
+        slide
+            .extract(&options, &SlideOutputs::default(), |tile| {
+                seen.lock().unwrap().push((tile.tile_x(), tile.tile_y()));
+                Ok(())
+            })
+            .unwrap();
+
+        let seen = seen.into_inner().unwrap();
+        let seen_set: HashSet<_> = seen.iter().copied().collect();
+        assert_eq!(
+            seen.len(),
+            expected.len(),
+            "no duplicate or skipped tiles under parallelism"
+        );
+        assert_eq!(seen_set, expected);
+    }
+
+    #[test]
+    fn extract_with_tissue_filter_only_emits_tiles_above_the_threshold() {
+        let slide = open_fixture();
+        let total = slide.tile_coords(0).unwrap().count();
+
+        let kept = Mutex::new(0usize);
+        let options = ExtractionOptions::sequential()
+            .with_level(0)
+            .with_min_tissue_fraction(0.5);
+        slide
+            .extract(&options, &SlideOutputs::default(), |_tile| {
+                *kept.lock().unwrap() += 1;
+                Ok(())
+            })
+            .unwrap();
+
+        let kept = kept.into_inner().unwrap();
+        assert!(kept > 0, "expected at least some tissue-containing tiles");
+        assert!(
+            kept < total,
+            "expected the filter to drop at least one tile"
+        );
+    }
+
+    #[test]
+    fn extract_with_stain_normalization_does_not_error() {
+        let slide = open_fixture();
+        let options = ExtractionOptions::sequential()
+            .with_level(0)
+            .with_stain_normalization();
+
+        let result = slide.extract(&options, &SlideOutputs::default(), |_tile| Ok(()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn extract_with_target_mpp_resizes_tiles_to_match() {
+        let slide = open_fixture();
+        let native_mpp = slide.metadata().microns_per_pixel().unwrap();
+        let target_mpp = native_mpp * 2.0; // half resolution
+
+        let sizes = Mutex::new(Vec::new());
+        let options = ExtractionOptions::sequential().with_target_mpp(target_mpp);
+        slide
+            .extract(&options, &SlideOutputs::default(), |tile| {
+                sizes.lock().unwrap().push(tile.image().width());
+                Ok(())
+            })
+            .unwrap();
+
+        let sizes = sizes.into_inner().unwrap();
+        assert!(!sizes.is_empty());
+        // Native tile width is 240px; doubling the target MPP halves it.
+        assert!(sizes.iter().all(|&w| w == 120));
+    }
+
+    #[test]
+    fn extract_writes_tile_dir_tfrecord_and_report_outputs() {
+        let slide = open_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let tile_dir = dir.path().join("tiles");
+        let tfrecord_path = dir.path().join("out.tfrecord");
+        let report_path = dir.path().join("report.pdf");
+
+        let options = ExtractionOptions::sequential().with_level(0);
+        let outputs = SlideOutputs::default()
+            .with_tile_dir(&tile_dir)
+            .with_tfrecord_file(&tfrecord_path)
+            .with_report_path(&report_path);
+
+        slide.extract(&options, &outputs, |_tile| Ok(())).unwrap();
+
+        let expected_tiles = slide.tile_coords(0).unwrap().count();
+        let written_tiles = std::fs::read_dir(&tile_dir).unwrap().count();
+        assert_eq!(written_tiles, expected_tiles);
+
+        let tfrecord_meta = std::fs::metadata(&tfrecord_path).unwrap();
+        assert!(tfrecord_meta.len() > 0);
+
+        let report_bytes = std::fs::read(&report_path).unwrap();
+        assert!(report_bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn build_overview_image_matches_lowest_level_aspect_ratio() {
+        let slide = open_fixture();
+        let overview = slide.build_overview_image().unwrap();
+        let level = slide.metadata().level(slide.level_count() - 1).unwrap();
+
+        assert!(overview.width() > 0 && overview.height() > 0);
+
+        let level_ratio = level.dimensions().width as f64 / level.dimensions().height as f64;
+        let overview_ratio = overview.width() as f64 / overview.height() as f64;
+        assert!((level_ratio - overview_ratio).abs() < 0.01);
     }
 }
