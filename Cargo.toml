@@ -1,6 +1,6 @@
 [package]
 name = "slideforge"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 
@@ -21,6 +21,7 @@ exclude = [
     "README.pdf",
     ".github/",
     "cliff.toml",
+    "tests/fixtures/",
 ]
 
 [features]
