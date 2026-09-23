@@ -116,9 +116,18 @@ impl TileDirectory {
             .ok_or(WsiError::UnsupportedFormat)?;
         let photometric = Photometric::try_from(&photometric)?;
 
-        let tile_offsets = read_u64_list(&tile_offsets)?;
-        let byte_counts = read_u64_list(&byte_counts)?;
-        let jpeg_tables = read_u8_list(&jpeg_tables)?;
+        let tile_offsets = read_typed_list(&tile_offsets, |v| match v {
+            Value::Unsigned(v) => Some(*v as u64),
+            _ => None,
+        })?;
+        let byte_counts = read_typed_list(&byte_counts, |v| match v {
+            Value::Unsigned(v) => Some(*v as u64),
+            _ => None,
+        })?;
+        let jpeg_tables = read_typed_list(&jpeg_tables, |v| match v {
+            Value::Byte(v) => Some(*v),
+            _ => None,
+        })?;
 
         if tile_offsets.len() != byte_counts.len() {
             return Err(WsiError::InvalidMetadata);
@@ -291,31 +300,15 @@ impl Tile {
     }
 }
 
-/// Helper function to read a list of u64 values from a TIFF tag value.
-/// !TODO | This and read_u8_list should probably be moved into a generic utility function (maybe utils.rs)
-fn read_u64_list(value: &Value) -> Result<Vec<u64>, WsiError> {
+/// Reads a list of values from a TIFF tag, extracting each element via `extract`.
+fn read_typed_list<T>(
+    value: &Value,
+    extract: impl Fn(&Value) -> Option<T>,
+) -> Result<Vec<T>, WsiError> {
     match value {
         Value::List(values) => values
             .iter()
-            .map(|v| match v {
-                Value::Unsigned(v) => Ok(*v as u64),
-                _ => Err(WsiError::UnsupportedFormat),
-            })
-            .collect(),
-        _ => Err(WsiError::UnsupportedFormat),
-    }
-}
-
-/// Helper function to read a list of u8 values from a TIFF tag value.
-/// !TODO | This and read_u64_list should probably be moved into a generic utility function (maybe utils.rs)
-fn read_u8_list(value: &Value) -> Result<Vec<u8>, WsiError> {
-    match value {
-        Value::List(values) => values
-            .iter()
-            .map(|v| match v {
-                Value::Byte(v) => Ok(*v),
-                _ => Err(WsiError::UnsupportedFormat),
-            })
+            .map(|v| extract(v).ok_or(WsiError::UnsupportedFormat))
             .collect(),
         _ => Err(WsiError::UnsupportedFormat),
     }
