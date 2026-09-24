@@ -4,6 +4,10 @@
 
 ![CI](https://github.com/WaibelJonas/slideforge/actions/workflows/ci.yml/badge.svg)
 
+[![crates.io](https://img.shields.io/crates/v/slideforge.svg)](https://crates.io/crates/slideforge)
+
+[![docs.rs](https://img.shields.io/docsrs/slideforge)](https://docs.rs/slideforge)
+
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange)](https://www.rust-lang.org)
@@ -28,7 +32,6 @@ Slideforge is a lightweight, open-source library for tile extraction on Whole Sl
 
 - Additional tissue filtering and stain normalization methods beyond Otsu thresholding and Reinhard normalization
 - Unit test coverage for `cli.rs`, `report.rs`, `tfrecord.rs`, `logging/`, and `decoder/`
-- Publish to crates.io, with generated documentation on docs.rs
 - Python integration for downstream ML pipelines (e.g. a thin CLI wrapper), evaluated on an experimental branch of [AutoMIL](https://github.com/frankkramer-lab/AutoMIL)
 
 ## Getting Started
@@ -37,19 +40,17 @@ This section provides an overview of how to get started with Slideforge, using e
 
 ### Installation
 
-Slideforge isn't published on crates.io (yet ;)) but can be installed via Github.
+Slideforge is [published on crates.io](https://crates.io/crates/slideforge). To get the CLI:
 
-The easiest way to get the CLI is to download a prebuilt binary from the
-[Releases page](https://github.com/WaibelJonas/slideforge/releases) — Windows, macOS (Intel + Apple Silicon), and Linux builds are published with every release.
+    cargo install slideforge
 
-Alternatively, you can build Slideforge yourself with cargo:
-
-    cargo install --git https://github.com/WaibelJonas/slideforge
-
-As a library, add the following to your `Cargo.toml`:
+As a library, add it to your `Cargo.toml`:
 
     [dependencies]
-    slideforge = { git = "https://github.com/WaibelJonas/slideforge" }
+    slideforge = "0.1"
+
+Alternatively, download a prebuilt CLI binary from the
+[Releases page](https://github.com/WaibelJonas/slideforge/releases) — Windows, macOS (Intel + Apple Silicon), and Linux builds are published with every release. Building from the git repository directly (`cargo install --git https://github.com/WaibelJonas/slideforge`) also works, if you want the latest unreleased commit.
 
 Slideforge requires **Rust 1.85 or later**.
 
@@ -101,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Documentation
 
-Since the crate is not yet published to crates.io, the documentation is not available on docs.rs. However, you can generate the documentation locally using the following command:
+Full API documentation is on [docs.rs/slideforge](https://docs.rs/slideforge). To generate it locally instead:
 
     cargo doc --open --no-deps
 
