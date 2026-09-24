@@ -42,6 +42,10 @@ struct ParsedIfd {
     kind: ImageKind,
 }
 
+/// The result of parsing an SVS file: its metadata, and each pyramid
+/// level's [`TileDirectory`] (in level order, so index `i` corresponds to
+/// `metadata.level(i)`). Used by [`Slide::open`](crate::slide::Slide::open)
+/// to build a [`Slide`](crate::slide::Slide).
 pub struct ParsedSlide {
     pub metadata: Metadata,
     pub tile_directories: Vec<TileDirectory>,
@@ -287,6 +291,15 @@ pub fn read_metadata(path: &Path) -> Result<Metadata, WsiError> {
     Ok(Metadata::new(levels, objective_power, microns_per_pixel))
 }
 
+/// Parses an SVS file into its metadata and per-level tile directories.
+///
+/// Like [`read_metadata`], but also reads each pyramid level's
+/// [`TileDirectory`] (tile offsets/byte counts/JPEG tables) in the same
+/// pass, since both require walking the same IFDs.
+///
+/// # Errors
+/// Returns [`WsiError`] if the file cannot be opened or required TIFF
+/// metadata cannot be read.
 pub fn parse_slide(path: &Path) -> Result<ParsedSlide, WsiError> {
     let mut decoder = get_decoder(path)?;
 

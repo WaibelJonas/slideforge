@@ -1,4 +1,11 @@
-/// Representation of a single Whole Slide Image (WSI) along with its metadata.
+//! Whole slide image (WSI) reading and tile extraction.
+//!
+//! [`Slide`] represents a single opened WSI: its pyramid metadata and an
+//! open file handle for reading tiles. [`Slide::extract`] is the main
+//! entry point for pulling tiles out of it, with tissue filtering, stain
+//! normalization, and resolution targeting layered in via
+//! [`ExtractionOptions`].
+
 use crate::backend::svs::parse_slide;
 use crate::decoder::JpegDecoder;
 use crate::error::WsiError;

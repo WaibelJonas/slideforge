@@ -1,3 +1,10 @@
+//! Batch tile extraction across a directory of slides.
+//!
+//! [`Dataset`] mirrors [`Slide`]'s extraction API ([`Dataset::extract`])
+//! across every slide in a directory at once, routing each slide's outputs
+//! into its own subdirectory and rolling up a combined
+//! [`DatasetReport`].
+
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,6 +16,11 @@ use crate::slide::{Slide, SlideOutputs};
 use crate::tile::Tile;
 use crate::{ExtractionOptions, ReportCollector};
 
+/// A collection of WSI file paths to process as a batch.
+///
+/// Construct via [`Dataset::from_dir`] (every `.svs` file directly inside a
+/// directory) or [`Dataset::from_paths`] (an explicit list), then run
+/// [`Dataset::extract`].
 pub struct Dataset {
     paths: Vec<PathBuf>,
 }
@@ -33,6 +45,13 @@ pub struct DatasetOutputs {
 }
 
 impl Dataset {
+    /// Builds a [`Dataset`] from every `.svs` file (case-insensitive)
+    /// directly inside `dir`. Non-matching files are silently skipped; a
+    /// directory with no matching files yields an empty, non-error
+    /// [`Dataset`].
+    ///
+    /// # Errors
+    /// Returns [`WsiError`] if `dir` cannot be read.
     pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self, WsiError> {
         let paths = read_dir(dir)?
             .map(|result| result.map(|entry| entry.path()))
@@ -47,22 +66,39 @@ impl Dataset {
         Ok(Self { paths })
     }
 
+    /// Builds a [`Dataset`] from an explicit list of slide paths, bypassing
+    /// directory scanning.
     pub fn from_paths(paths: Vec<PathBuf>) -> Self {
         Self { paths }
     }
 
+    /// Number of slide paths in this dataset.
     pub fn len(&self) -> usize {
         self.paths.len()
     }
 
+    /// Whether this dataset has no slide paths.
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty()
     }
 
+    /// The slide paths in this dataset.
     pub fn paths(&self) -> &Vec<PathBuf> {
         &self.paths
     }
 
+    /// Extracts tiles from every slide in the dataset, calling `f` for each
+    /// kept tile.
+    ///
+    /// Each slide's outputs are written under `output_root/<slide-stem>/`
+    /// (see [`DatasetOutputs`] for what gets written there). A slide that
+    /// fails to open is logged and skipped entirely; a slide that opens but
+    /// fails during extraction is recorded in the returned
+    /// [`DatasetReport`]'s failures instead of aborting the batch.
+    ///
+    /// # Errors
+    /// Returns [`WsiError`] if `output_root` (or a slide's output
+    /// directory) cannot be created.
     pub fn extract<F>(
         &self,
         options: &ExtractionOptions,
