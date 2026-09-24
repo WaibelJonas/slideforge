@@ -27,7 +27,7 @@ Slideforge is a lightweight, open-source library for tile extraction on Whole Sl
 ## Planned
 
 - Additional tissue filtering and stain normalization methods beyond Otsu thresholding and Reinhard normalization
-- Broader unit test coverage for the entire project
+- Unit test coverage for `cli.rs`, `report.rs`, `tfrecord.rs`, `logging/`, and `decoder/`
 - Publish to crates.io, with generated documentation on docs.rs
 - Python integration for downstream ML pipelines (e.g. a thin CLI wrapper), evaluated on an experimental branch of [AutoMIL](https://github.com/frankkramer-lab/AutoMIL)
 
@@ -40,7 +40,7 @@ This section provides an overview of how to get started with Slideforge, using e
 Slideforge isn't published on crates.io (yet ;)) but can be installed via Github.
 
 The easiest way to get the CLI is to download a prebuilt binary from the
-[Releases page](https://github.com/WaibelJonas/slideforge/releases). Windows, macOS (Intel + Apple Silicon), and Linux builds vor **v.0.1.0** are currently published.
+[Releases page](https://github.com/WaibelJonas/slideforge/releases) — Windows, macOS (Intel + Apple Silicon), and Linux builds are published with every release.
 
 Alternatively, you can build Slideforge yourself with cargo:
 
@@ -123,3 +123,5 @@ The reference tile that serves as a target for stain normalization is taken from
 ## License
 
 Slideforge is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0). see [LICENSE](LICENSE) for the full text.
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
