@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] - 2026-09-23
+## [0.1.2] - 2026-09-24
+
+### ⚙️ Miscellaneous Tasks
+
+- Added release workflow
+
+## [0.1.1] - 2026-09-24
 
 ### 🚀 Features
 
@@ -14,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 🐛 Bug Fixes
 
 - Deleted README.pdf
+- Updated cacha20 dependency
 
 ### 🚜 Refactor
 
@@ -24,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated README, fixed rustdoc warnings, added cargo doc job to CI workflow
 - Minor changes to README
 - Updated Cargo.toml
+- Updated README
+- Added crate-level and module-level documentation, along with missing item docs
 
 ### 🧪 Testing
 
