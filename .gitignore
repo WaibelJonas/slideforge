@@ -42,3 +42,12 @@ assets/*
 
 settings.json
 README.pdf
+
+# Python binding (python/) build artifacts
+python/target/
+*.so
+*.pyd
+**/__pycache__/
+*.egg-info/
+python/dist/
+.pytest_cache/

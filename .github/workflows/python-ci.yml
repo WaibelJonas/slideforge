@@ -1,0 +1,57 @@
+name: Python bindings
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "python/**"
+      - ".github/workflows/python-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "python/**"
+      - ".github/workflows/python-ci.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-and-clippy:
+    name: Format & Clippy (python/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - run: cargo fmt --manifest-path python/Cargo.toml --check
+      - run: cargo clippy --manifest-path python/Cargo.toml --all-targets -- -D warnings
+
+  test:
+    name: Build & pytest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install maturin pytest numpy
+      - run: maturin develop --release --manifest-path python/Cargo.toml
+      - run: pytest python/tests
