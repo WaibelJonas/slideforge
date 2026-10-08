@@ -214,15 +214,26 @@ pub struct Tile {
     level: usize,
     tile_x: u32,
     tile_y: u32,
+    origin_x: u32,
+    origin_y: u32,
 }
 
 impl Tile {
-    pub fn new(image: DynamicImage, level: usize, tile_x: u32, tile_y: u32) -> Tile {
+    pub fn new(
+        image: DynamicImage,
+        level: usize,
+        tile_x: u32,
+        tile_y: u32,
+        origin_x: u32,
+        origin_y: u32,
+    ) -> Tile {
         Tile {
             image,
             level,
             tile_x,
             tile_y,
+            origin_x,
+            origin_y,
         }
     }
 
@@ -246,6 +257,14 @@ impl Tile {
 
     pub fn level(&self) -> usize {
         self.level
+    }
+
+    pub fn origin_x(&self) -> u32 {
+        self.origin_x
+    }
+
+    pub fn origin_y(&self) -> u32 {
+        self.origin_y
     }
 
     /// Computes the Otsu-derived tissue/background classification for this
@@ -273,6 +292,8 @@ impl Tile {
             self.level,
             self.tile_x,
             self.tile_y,
+            self.origin_x,
+            self.origin_y,
         )
     }
 
@@ -284,6 +305,8 @@ impl Tile {
             self.level,
             self.tile_x,
             self.tile_y,
+            self.origin_x,
+            self.origin_y,
         )
     }
 
