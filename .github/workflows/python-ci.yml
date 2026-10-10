@@ -53,5 +53,11 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install maturin pytest numpy
-      - run: maturin develop --release --manifest-path python/Cargo.toml
+      # `maturin develop` requires an active virtualenv/conda env to install
+      # into, which bare `setup-python` runners don't have -- build the
+      # wheel and install it directly instead (maturin's own suggested
+      # fallback for this situation).
+      - run: maturin build --release --manifest-path python/Cargo.toml --out dist
+      - shell: bash
+        run: pip install dist/*.whl
       - run: pytest python/tests
