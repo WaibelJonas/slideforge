@@ -42,3 +42,14 @@ assets/*
 
 settings.json
 README.pdf
+
+# Python binding (python/) build artifacts
+python/target/
+*.so
+*.pyd
+**/__pycache__/
+*.egg-info/
+# `maturin build --out dist` resolves relative to the cwd, not
+# --manifest-path, so this lands at the repo root in both CI and local use.
+/dist/
+.pytest_cache/

@@ -315,8 +315,8 @@ impl ExtractionObserver for ReportCollector {
     fn on_tile_extraction(&self, _level_idx: usize, tile: &Tile) {
         self.kept.fetch_add(1, Ordering::Relaxed);
         self.positions.lock().expect("Mutex lock failed!").push((
-            tile.tile_x(),
-            tile.tile_y(),
+            tile.origin_x(),
+            tile.origin_y(),
             true,
         ));
 

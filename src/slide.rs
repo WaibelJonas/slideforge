@@ -6,6 +6,7 @@
 //! normalization, and resolution targeting layered in via
 //! [`ExtractionOptions`].
 
+use crate::Level;
 use crate::backend::svs::parse_slide;
 use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
@@ -136,7 +137,7 @@ impl Slide {
         level_idx: usize,
         tile_x: u32,
         tile_y: u32,
-    ) -> Result<(&TileDirectory, u64, u64), WsiError> {
+    ) -> Result<(&TileDirectory, &Level, u64, u64), WsiError> {
         let level = self
             .metadata
             .level(level_idx)
@@ -149,7 +150,7 @@ impl Slide {
 
         let (offset, byte_count) = directory.get_tile_location_by_coord(tile_x, tile_y, level)?;
 
-        Ok((directory, offset, byte_count))
+        Ok((directory, level, offset, byte_count))
     }
 
     /// Reads and returns the raw tile bytes at the specified level and coordinates.
@@ -173,7 +174,7 @@ impl Slide {
         tile_x: u32,
         tile_y: u32,
     ) -> Result<Vec<u8>, WsiError> {
-        let (_, offset, byte_count) = self.locate_tile(level_idx, tile_x, tile_y)?;
+        let (_, _, offset, byte_count) = self.locate_tile(level_idx, tile_x, tile_y)?;
 
         let mut reader = self.reader.lock().expect("Mutex lock failed!");
         read_tile_bytes(&mut reader, offset, byte_count)
@@ -201,7 +202,12 @@ impl Slide {
         tile_x: u32,
         tile_y: u32,
     ) -> Result<Tile, WsiError> {
-        let (directory, offset, byte_count) = self.locate_tile(level_idx, tile_x, tile_y)?;
+        let (directory, level, offset, byte_count) = self.locate_tile(level_idx, tile_x, tile_y)?;
+        let origin_x =
+            ((tile_x * level.tile_size().width) as f64 * level.downsample_factor()).round() as u32;
+        let origin_y =
+            ((tile_y * level.tile_size().height) as f64 * level.downsample_factor()).round() as u32;
+
         let mut reader = self.reader.lock().expect("Mutex lock failed!");
 
         let decoded_tile = {
@@ -210,7 +216,14 @@ impl Slide {
             JpegDecoder::decode(directory.jpeg_reader(&tile?), color_transform)?
         };
 
-        Ok(Tile::new(decoded_tile, level_idx, tile_x, tile_y))
+        Ok(Tile::new(
+            decoded_tile,
+            level_idx,
+            tile_x,
+            tile_y,
+            origin_x,
+            origin_y,
+        ))
     }
 
     /// Reads the raw tile bytes at the specified level and coordinates and decodes them into a [`Tile`].
@@ -234,13 +247,25 @@ impl Slide {
         tile_x: u32,
         tile_y: u32,
     ) -> Result<Tile, WsiError> {
-        let (directory, offset, byte_count) = self.locate_tile(level_idx, tile_x, tile_y)?;
+        let (directory, level, offset, byte_count) = self.locate_tile(level_idx, tile_x, tile_y)?;
+        let origin_x =
+            ((tile_x * level.tile_size().width) as f64 * level.downsample_factor()).round() as u32;
+        let origin_y =
+            ((tile_y * level.tile_size().height) as f64 * level.downsample_factor()).round() as u32;
+
         let color_transform = directory.photometric();
 
         let tile = read_tile_bytes_at(&self.random_access_file, offset, byte_count)?;
         let decoded_tile = JpegDecoder::decode(directory.jpeg_reader(&tile), color_transform)?;
 
-        Ok(Tile::new(decoded_tile, level_idx, tile_x, tile_y))
+        Ok(Tile::new(
+            decoded_tile,
+            level_idx,
+            tile_x,
+            tile_y,
+            origin_x,
+            origin_y,
+        ))
     }
 
     /// Returns an iterator over the tile coordinates (tile_x, tile_y) for the specified level.
@@ -370,6 +395,15 @@ impl Slide {
         F: Fn(Tile) -> Result<(), WsiError> + Sync,
     {
         let level_idx = self.resolve_resolution_level(&options.extraction_level)?;
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+
+        let footprint_w =
+            (level.tile_size().width as f64 * level.downsample_factor()).round() as u32;
+        let footprint_h =
+            (level.tile_size().height as f64 * level.downsample_factor()).round() as u32;
 
         // Computing the resize scale so the chosen level matches exactly the target resolution
         let resize_factor = match &options.extraction_level {
@@ -489,8 +523,9 @@ impl Slide {
             }
             if let Some(writer) = &tfrecord_writer {
                 let bytes = tile.encode_jpeg()?;
-                let loc_x = tile.tile_x() as i64;
-                let loc_y = tile.tile_y() as i64;
+                let loc_x = (tile.origin_x() + footprint_w / 2) as i64;
+                let loc_y = (tile.origin_y() + footprint_h / 2) as i64;
+
                 let record = tfrecord::tile_record(&slide_name, bytes, loc_x, loc_y);
                 writer
                     .lock()
@@ -615,6 +650,23 @@ mod tests {
         let tile = slide.decode_tile(0, 0, 0).unwrap();
         assert_eq!(tile.image().width(), 240);
         assert_eq!(tile.image().height(), 240);
+    }
+
+    #[test]
+    fn decode_tile_computes_base_pixel_origin_from_grid_coords() {
+        let slide = open_fixture();
+
+        // The fixture has a single pyramid level (downsample_factor == 1.0),
+        // so a tile's base-pixel origin is just its grid coordinate times
+        // the native 240px tile size.
+        let tile = slide.decode_tile(0, 0, 0).unwrap();
+        assert_eq!((tile.origin_x(), tile.origin_y()), (0, 0));
+
+        let tile = slide.decode_tile(0, 1, 0).unwrap();
+        assert_eq!((tile.origin_x(), tile.origin_y()), (240, 0));
+
+        let tile = slide.decode_tile(0, 2, 3).unwrap();
+        assert_eq!((tile.origin_x(), tile.origin_y()), (480, 720));
     }
 
     #[test]

@@ -171,6 +171,13 @@ impl Dataset {
                             .level(level_idx)
                             .ok_or(WsiError::LevelIndexOutOfBounds)?;
                         let overview = slide.build_overview_image()?;
+                        let base = slide.metadata().base_level();
+                        let footprint = (
+                            (level.tile_size().width as f64 * level.downsample_factor()).round()
+                                as u32,
+                            (level.tile_size().height as f64 * level.downsample_factor()).round()
+                                as u32,
+                        );
 
                         summaries.push(SlideSummary::new(
                             file_stem.to_string(),
@@ -178,8 +185,8 @@ impl Dataset {
                             collector.dropped(),
                             overview,
                             collector.tile_positions(),
-                            (level.dimensions().width, level.dimensions().height),
-                            (level.tile_size().width, level.tile_size().height),
+                            (base.dimensions().width, base.dimensions().height),
+                            footprint,
                         ));
                     }
                 }

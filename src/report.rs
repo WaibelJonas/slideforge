@@ -80,9 +80,13 @@ pub(crate) struct SlideSummary {
     /// number of dropped tiles
     dropped: usize,
     overview: DynamicImage,
+    /// (origin_x, origin_y, kept), in base-level (level 0) pixels.
     tile_positions: Vec<(u32, u32, bool)>,
-    level_dimensions: (u32, u32),
-    tile_size: (u32, u32),
+    /// The slide's base-level (level 0) dimensions.
+    base_dimensions: (u32, u32),
+    /// A kept tile's physical footprint, in base-level pixels (i.e. before
+    /// any target-MPP/`tile_px` resize).
+    tile_footprint: (u32, u32),
 }
 
 impl SlideSummary {
@@ -92,8 +96,8 @@ impl SlideSummary {
         dropped: usize,
         overview: DynamicImage,
         tile_positions: Vec<(u32, u32, bool)>,
-        level_dimensions: (u32, u32),
-        tile_size: (u32, u32),
+        base_dimensions: (u32, u32),
+        tile_footprint: (u32, u32),
     ) -> Self {
         Self {
             name,
@@ -101,8 +105,8 @@ impl SlideSummary {
             dropped,
             overview,
             tile_positions,
-            level_dimensions,
-            tile_size,
+            base_dimensions,
+            tile_footprint,
         }
     }
 }
@@ -322,10 +326,10 @@ impl ExtractionReport {
     fn draw_kept_tile_grid(
         ops: &mut Vec<Op>,
         tile_positions: &[(u32, u32, bool)],
-        tile_w: f32,
-        tile_h: f32,
-        level_w: f32,
-        level_h: f32,
+        footprint_w: f32,
+        footprint_h: f32,
+        base_w: f32,
+        base_h: f32,
         x0: f32,
         y0: f32,
         w_mm: f32,
@@ -336,13 +340,19 @@ impl ExtractionReport {
             col: Color::Rgb(KEPT_COLOR),
         });
 
-        for &(tile_x, tile_y, kept) in tile_positions {
+        for &(origin_x, origin_y, kept) in tile_positions {
             if !kept {
                 continue;
             }
 
-            let (fx0, fy0, fx1, fy1) =
-                tile_fractional_bounds(tile_x, tile_y, tile_w, tile_h, level_w, level_h);
+            let (fx0, fy0, fx1, fy1) = tile_fractional_bounds(
+                origin_x,
+                origin_y,
+                footprint_w,
+                footprint_h,
+                base_w,
+                base_h,
+            );
 
             let rect_x = x0 + fx0 * w_mm;
             let rect_w = (fx1 - fx0) * w_mm;
@@ -386,18 +396,19 @@ impl ExtractionReport {
         ops.push(image_op(image_id, px_w, x0, y0, w_mm));
 
         if let Some(level) = slide.metadata().level(self.level_idx) {
-            let level_w = level.dimensions().width as f32;
-            let level_h = level.dimensions().height as f32;
-            let tile_w = level.tile_size().width as f32;
-            let tile_h = level.tile_size().height as f32;
+            let base = slide.metadata().base_level();
+            let base_w = base.dimensions().width as f32;
+            let base_h = base.dimensions().height as f32;
+            let footprint_w = level.tile_size().width as f32 * level.downsample_factor() as f32;
+            let footprint_h = level.tile_size().height as f32 * level.downsample_factor() as f32;
 
             Self::draw_kept_tile_grid(
                 ops,
                 &self.tile_positions,
-                tile_w,
-                tile_h,
-                level_w,
-                level_h,
+                footprint_w,
+                footprint_h,
+                base_w,
+                base_h,
                 x0,
                 y0,
                 w_mm,
@@ -564,23 +575,25 @@ fn fit_within(aspect_ratio: f32, max_w_mm: f32, max_h_mm: f32) -> (f32, f32) {
     }
 }
 
-/// Fractional bounds (`[0, 1]`, x left-to-right, y **top-to-bottom**) of an
-/// extraction-level tile within its level's full image. Used to overlay a
-/// tile grid onto a scaled-down rendering of the slide (e.g. the overview
-/// image, built from a different, lower-resolution level) since both cover
-/// the same fractional extent regardless of their actual pixel resolution.
+/// Fractional bounds (`[0, 1]`, x left-to-right, y **top-to-bottom**) of a
+/// tile within the slide's base-level (level 0) image, given the tile's
+/// base-pixel origin (top-left corner) and physical footprint. Used to
+/// overlay a tile grid onto a scaled-down rendering of the slide (e.g. the
+/// overview image, built from a different, lower-resolution level) since
+/// both cover the same fractional extent regardless of their actual pixel
+/// resolution.
 fn tile_fractional_bounds(
-    tile_x: u32,
-    tile_y: u32,
-    tile_w: f32,
-    tile_h: f32,
-    level_w: f32,
-    level_h: f32,
+    origin_x: u32,
+    origin_y: u32,
+    footprint_w: f32,
+    footprint_h: f32,
+    base_w: f32,
+    base_h: f32,
 ) -> (f32, f32, f32, f32) {
-    let x0 = (tile_x as f32 * tile_w) / level_w;
-    let x1 = ((tile_x as f32 + 1.0) * tile_w).min(level_w) / level_w;
-    let y0 = (tile_y as f32 * tile_h) / level_h;
-    let y1 = ((tile_y as f32 + 1.0) * tile_h).min(level_h) / level_h;
+    let x0 = origin_x as f32 / base_w;
+    let x1 = (origin_x as f32 + footprint_w).min(base_w) / base_w;
+    let y0 = origin_y as f32 / base_h;
+    let y1 = (origin_y as f32 + footprint_h).min(base_h) / base_h;
     (x0, y0, x1, y1)
 }
 
@@ -938,19 +951,20 @@ impl DatasetReport {
 
             ops.push(image_op(image_id.clone(), *px_w, x0, y0, w_mm));
 
-            let (level_w, level_h) = (
-                slide.level_dimensions.0 as f32,
-                slide.level_dimensions.1 as f32,
+            let (base_w, base_h) = (
+                slide.base_dimensions.0 as f32,
+                slide.base_dimensions.1 as f32,
             );
-            let (tile_w, tile_h) = (slide.tile_size.0 as f32, slide.tile_size.1 as f32);
+            let (footprint_w, footprint_h) =
+                (slide.tile_footprint.0 as f32, slide.tile_footprint.1 as f32);
 
             ExtractionReport::draw_kept_tile_grid(
                 &mut ops,
                 &slide.tile_positions,
-                tile_w,
-                tile_h,
-                level_w,
-                level_h,
+                footprint_w,
+                footprint_h,
+                base_w,
+                base_h,
                 x0,
                 y0,
                 w_mm,
@@ -975,8 +989,9 @@ mod tests {
 
     #[test]
     fn tile_fractional_bounds_clamps_boundary_tile() {
-        // Last column tile only partially covers the level (padding beyond it).
-        let (x0, _, x1, _) = tile_fractional_bounds(3, 0, 512.0, 512.0, 1800.0, 1024.0);
+        // Last column tile (origin_x = 3 * 512 = 1536) only partially covers
+        // the base image (padding beyond it).
+        let (x0, _, x1, _) = tile_fractional_bounds(1536, 0, 512.0, 512.0, 1800.0, 1024.0);
         assert!((x0 - (1536.0 / 1800.0)).abs() < 1e-6);
         assert_eq!(x1, 1.0);
     }
