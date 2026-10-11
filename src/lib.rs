@@ -52,7 +52,7 @@ pub mod stain;
 pub mod tfrecord;
 pub mod tile;
 
-pub use extraction::{ExtractionOptions, Parallelism};
+pub use extraction::{ExtractionOptions, Parallelism, TileGeometry};
 pub use filter::TissueMask;
 pub use logging::{
     ExtractionObserver, ExtractionStats, ProgressBar, ReportCollector, SimpleLogging,

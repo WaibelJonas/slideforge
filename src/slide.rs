@@ -10,7 +10,7 @@ use crate::Level;
 use crate::backend::svs::parse_slide;
 use crate::decoder::JpegDecoder;
 use crate::error::WsiError;
-use crate::extraction::{ExtractionLevel, ExtractionOptions, Parallelism};
+use crate::extraction::{ExtractionLevel, ExtractionOptions, Parallelism, TileGeometry};
 use crate::filter::{TissueMask, grayscale_histogram, otsu_threshold_from_histogram};
 use crate::logging::{DualObserver, ExtractionObserver, ExtractionStats, ReportCollector};
 use crate::metadata::Metadata;
@@ -35,6 +35,25 @@ const TILE_BUFFER_CAPACITY: usize = 1024 * 1024;
 /// Below this, resize is skipped entirely: the resolved
 /// level's native resolution is already close enough to the target.
 const RESIZE_SCALE_EPSILON: f64 = 1e-3;
+
+/// Number of fixed-size windows (size `window_px`, stride `stride_px`)
+/// that fit entirely within `level_dim`. Integer division floors, so a
+/// trailing partial window is dropped rather than padded -- matches
+/// slideflow's convention, unlike `Native`'s boundary-tile padding.
+fn window_count(level_dim: u32, window_px: u32, stride_px: u32) -> u32 {
+    if window_px > level_dim {
+        return 0;
+    }
+    (level_dim - window_px) / stride_px + 1
+}
+
+/// Small tile grid paramater wrapper for later use in slide::extract
+/// TODO! | Should probably be placed somewhere else
+struct GridParams {
+    tile_px: u32,
+    window_px: u32,
+    stride_px: u32,
+}
 
 /// Destination paths for the outputs a single [`Slide::extract`] run can
 /// produce. Each field independently enables its output when `Some`;
@@ -268,6 +287,130 @@ impl Slide {
         ))
     }
 
+    /// Reads an arbitrary image region and stitches together native tiles that overlap with it.
+    ///
+    /// A region that extends partially or fully past the level's real
+    /// dimensions is not an error -- the uncovered canvas area is left
+    /// black, mirroring how native boundary tiles are already padded.
+    ///
+    /// # Arguments
+    /// * `level_idx` - The index of the pyramid level.
+    /// * `x` - The x-coordinate of the region's top-left corner, in `level_idx`'s own pixel space.
+    /// * `y` - The y-coordinate of the region's top-left corner, in `level_idx`'s own pixel space.
+    /// * `width` - The width of the region, in pixels.
+    /// * `height` - The height of the region, in pixels.
+    ///
+    /// # Returns
+    /// A [`Result`] containing a [`DynamicImage`] representing the image region on success, or a
+    /// [`WsiError`] on failure.
+    ///
+    /// # Errors
+    /// Returns [`WsiError::LevelIndexOutOfBounds`] if the specified level index is invalid.
+    pub fn read_region(
+        &self,
+        level_idx: usize,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<DynamicImage, WsiError> {
+        if width == 0 || height == 0 {
+            return Ok(DynamicImage::ImageRgb8(RgbImage::new(width, height)));
+        };
+
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+
+        let tile_size = level.tile_size();
+        let mut canvas = RgbImage::new(width, height);
+
+        // Tile index at x y
+        let tile_x0 = x / tile_size.width;
+        let tile_y0 = y / tile_size.height;
+        // Tile index at x + width y + height
+        let tile_x1 = (x + width - 1) / tile_size.width;
+        let tile_y1 = (y + height - 1) / tile_size.height;
+
+        for ty in tile_y0..=tile_y1.min(level.tiles_y().saturating_sub(1)) {
+            for tx in tile_x0..=tile_x1.min(level.tiles_x().saturating_sub(1)) {
+                let tile = self.decode_tile_concurrent(level_idx, tx, ty)?;
+                let cropped = self.cropped_image(level_idx, &tile)?;
+                let (valid_w, valid_h) = (cropped.width(), cropped.height());
+
+                let tile_px_x0 = tx * tile_size.width;
+                let tile_px_y0 = ty * tile_size.height;
+
+                let overlap_x0 = x.max(tile_px_x0);
+                let overlap_y0 = y.max(tile_px_y0);
+                let overlap_x1 = (x + width).min(tile_px_x0 + valid_w);
+                let overlap_y1 = (y + height).min(tile_px_y0 + valid_h);
+
+                if overlap_x0 >= overlap_x1 || overlap_y0 >= overlap_y1 {
+                    continue;
+                }
+
+                let sub = cropped
+                    .crop_imm(
+                        overlap_x0 - tile_px_x0,
+                        overlap_y0 - tile_px_y0,
+                        overlap_x1 - overlap_x0,
+                        overlap_y1 - overlap_y0,
+                    )
+                    .to_rgb8();
+
+                image::imageops::replace(
+                    &mut canvas,
+                    &sub,
+                    (overlap_x0 - x) as i64,
+                    (overlap_y0 - y) as i64,
+                );
+            }
+        }
+
+        Ok(DynamicImage::ImageRgb8(canvas))
+    }
+
+    /// Decodes one [`TileGeometry::Grid`] window at grid coordinate
+    /// `(col, row)` into a [`Tile`] already resized to `params.tile_px`.
+    fn decode_grid_tile(
+        &self,
+        level_idx: usize,
+        col: u32,
+        row: u32,
+        params: &GridParams,
+        downsample_factor: f64,
+    ) -> Result<Tile, WsiError> {
+        let origin_x_at_level = col * params.stride_px;
+        let origin_y_at_level = row * params.stride_px;
+
+        let region = self.read_region(
+            level_idx,
+            origin_x_at_level,
+            origin_y_at_level,
+            params.window_px,
+            params.window_px,
+        )?;
+        let resized = region.resize_exact(
+            params.tile_px,
+            params.tile_px,
+            image::imageops::FilterType::Triangle,
+        );
+
+        let origin_x_base = (origin_x_at_level as f64 * downsample_factor).round() as u32;
+        let origin_y_base = (origin_y_at_level as f64 * downsample_factor).round() as u32;
+
+        Ok(Tile::new(
+            resized,
+            level_idx,
+            col,
+            row,
+            origin_x_base,
+            origin_y_base,
+        ))
+    }
+
     /// Returns an iterator over the tile coordinates (tile_x, tile_y) for the specified level.
     /// The iterator yields tuples of (tile_x, tile_y) for each tile in the specified level, in row-major order.
     ///
@@ -400,29 +543,67 @@ impl Slide {
             .level(level_idx)
             .ok_or(WsiError::LevelIndexOutOfBounds)?;
 
-        let footprint_w =
-            (level.tile_size().width as f64 * level.downsample_factor()).round() as u32;
-        let footprint_h =
-            (level.tile_size().height as f64 * level.downsample_factor()).round() as u32;
-
-        // Computing the resize scale so the chosen level matches exactly the target resolution
-        let resize_factor = match &options.extraction_level {
-            Some(ExtractionLevel::TargetMpp(target)) => {
+        let grid_params = match &options.geometry {
+            TileGeometry::Grid {
+                tile_px,
+                tile_um,
+                stride_um,
+            } => {
                 let base_mpp = self
                     .metadata
                     .microns_per_pixel()
                     .ok_or(WsiError::InvalidMetadata)?;
-                let level = self
+                let level_mpp = base_mpp * level.downsample_factor();
+                Some(GridParams {
+                    tile_px: *tile_px,
+                    window_px: (tile_um / level_mpp).round() as u32,
+                    stride_px: (stride_um.unwrap_or(*tile_um) / level_mpp).round() as u32,
+                })
+            }
+            TileGeometry::Native => None,
+        };
+
+        // A tile's physical footprint in base-level pixels. Depends on the tile geometry
+        let (footprint_w, footprint_h) = match &grid_params {
+            Some(params) => {
+                let footprint =
+                    (params.window_px as f64 * level.downsample_factor()).round() as u32;
+                (footprint, footprint)
+            }
+            None => (
+                (level.tile_size().width as f64 * level.downsample_factor()).round() as u32,
+                (level.tile_size().height as f64 * level.downsample_factor()).round() as u32,
+            ),
+        };
+
+        // Computing the resize scale
+        let resize_factor = match (&options.extraction_level, &grid_params) {
+            (Some(ExtractionLevel::TargetMpp(target)), None) => {
+                let base_mpp = self
                     .metadata
-                    .level(level_idx)
-                    .ok_or(WsiError::LevelIndexOutOfBounds)?;
+                    .microns_per_pixel()
+                    .ok_or(WsiError::InvalidMetadata)?;
                 let level_mpp = base_mpp * level.downsample_factor();
                 Some(level_mpp / target)
             }
             _ => None,
         };
 
-        let coords: Vec<(u32, u32)> = self.tile_coords(level_idx)?.collect();
+        let coords: Vec<(u32, u32)> = match &grid_params {
+            Some(params) => {
+                let cols =
+                    window_count(level.dimensions().width, params.window_px, params.stride_px);
+                let rows = window_count(
+                    level.dimensions().height,
+                    params.window_px,
+                    params.stride_px,
+                );
+                (0..rows)
+                    .flat_map(|row| (0..cols).map(move |col| (col, row)))
+                    .collect()
+            }
+            None => self.tile_coords(level_idx)?.collect(),
+        };
         let total_tiles = coords.len();
         let dropped_tiles = AtomicUsize::new(0);
 
@@ -482,7 +663,10 @@ impl Slide {
             if let (Some(min_fraction), Some(threshold)) =
                 (options.min_tissue_fraction, tissue_threshold)
             {
-                let cropped = self.cropped_image(level_idx, &tile)?;
+                let cropped: Cow<DynamicImage> = match options.geometry {
+                    TileGeometry::Native => self.cropped_image(level_idx, &tile)?,
+                    TileGeometry::Grid { .. } => Cow::Borrowed(tile.image()),
+                };
                 let tissue_mask = TissueMask::compute_with_threshold(&cropped, threshold);
                 if !tissue_mask.has_more_than_min_tissue(min_fraction) {
                     dropped_tiles.fetch_add(1, Ordering::Relaxed);
@@ -539,13 +723,29 @@ impl Slide {
         };
 
         let result = match options.parallelism {
-            Parallelism::Sequential => coords
-                .into_iter()
-                .try_for_each(|(x, y)| process(self.decode_tile(level_idx, x, y)?)),
+            Parallelism::Sequential => coords.into_iter().try_for_each(|(x, y)| {
+                let tile = match &grid_params {
+                    Some(params) => {
+                        self.decode_grid_tile(level_idx, x, y, params, level.downsample_factor())?
+                    }
+                    None => self.decode_tile(level_idx, x, y)?,
+                };
+                process(tile)
+            }),
             Parallelism::Parallel(threads) => {
                 let run = || {
                     coords.into_par_iter().try_for_each(|(x, y)| {
-                        process(self.decode_tile_concurrent(level_idx, x, y)?)
+                        let tile = match &grid_params {
+                            Some(params) => self.decode_grid_tile(
+                                level_idx,
+                                x,
+                                y,
+                                params,
+                                level.downsample_factor(),
+                            )?,
+                            None => self.decode_tile_concurrent(level_idx, x, y)?,
+                        };
+                        process(tile)
                     })
                 };
 
@@ -667,6 +867,14 @@ mod tests {
 
         let tile = slide.decode_tile(0, 2, 3).unwrap();
         assert_eq!((tile.origin_x(), tile.origin_y()), (480, 720));
+    }
+
+    #[test]
+    fn window_count_handles_exact_multiples_remainders_and_oversized_windows() {
+        assert_eq!(window_count(900, 300, 300), 3); // exact multiple
+        assert_eq!(window_count(1000, 300, 300), 3); // remainder dropped, not padded
+        assert_eq!(window_count(100, 300, 300), 0); // window larger than the level
+        assert_eq!(window_count(1000, 300, 150), 5); // overlapping stride
     }
 
     #[test]
@@ -822,5 +1030,117 @@ mod tests {
         let level_ratio = level.dimensions().width as f64 / level.dimensions().height as f64;
         let overview_ratio = overview.width() as f64 / overview.height() as f64;
         assert!((level_ratio - overview_ratio).abs() < 0.01);
+    }
+
+    #[test]
+    fn read_region_handles_rectangle_entirely_within_one_tile() {
+        let slide = open_fixture();
+        let region = slide.read_region(0, 10, 10, 50, 50).unwrap().to_rgb8();
+        let tile = slide.decode_tile(0, 0, 0).unwrap().image().to_rgb8();
+
+        for py in 0..50u32 {
+            for px in 0..50u32 {
+                assert_eq!(
+                    region.get_pixel(px, py),
+                    tile.get_pixel(10 + px, 10 + py),
+                    "mismatch at ({px}, {py})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn read_region_stitches_a_2x2_block_of_native_tiles() {
+        let slide = open_fixture();
+        let region = slide.read_region(0, 200, 200, 100, 100).unwrap().to_rgb8();
+
+        // Spans tiles (0,0), (1,0), (0,1), (1,1); spot-check one pixel
+        // sourced from each quadrant of the stitched region.
+        let expect = |region_x: u32, region_y: u32, tile_x: u32, tile_y: u32| {
+            let tile = slide
+                .decode_tile(0, tile_x, tile_y)
+                .unwrap()
+                .image()
+                .to_rgb8();
+            let local_x = (200 + region_x) - tile_x * 240;
+            let local_y = (200 + region_y) - tile_y * 240;
+            assert_eq!(
+                region.get_pixel(region_x, region_y),
+                tile.get_pixel(local_x, local_y)
+            );
+        };
+
+        expect(0, 0, 0, 0); // top-left quadrant
+        expect(99, 0, 1, 0); // top-right quadrant
+        expect(0, 99, 0, 1); // bottom-left quadrant
+        expect(99, 99, 1, 1); // bottom-right quadrant
+    }
+
+    #[test]
+    fn read_region_pads_with_black_past_the_slide_edge() {
+        let slide = open_fixture();
+        // Level is 2220px wide; requesting x=2200..2300 runs 80px past
+        // that edge (tile column 9's valid width is only 60px, ending at
+        // x=2220, well within row 9's full height -- no Y clipping here).
+        let region = slide
+            .read_region(0, 2200, 2200, 100, 100)
+            .unwrap()
+            .to_rgb8();
+        let tile = slide.decode_tile(0, 9, 9).unwrap().image().to_rgb8();
+
+        // Columns 0..20 (level x 2200..2220) are real, in-bounds data.
+        for py in 0..100u32 {
+            for px in 0..20u32 {
+                assert_eq!(region.get_pixel(px, py), tile.get_pixel(40 + px, 40 + py));
+            }
+        }
+
+        // Columns 20..100 fall past the slide's real edge and stay black.
+        for py in 0..100u32 {
+            for px in 20..100u32 {
+                assert_eq!(*region.get_pixel(px, py), image::Rgb([0, 0, 0]));
+            }
+        }
+    }
+
+    #[test]
+    fn grid_geometry_matches_native_over_their_overlapping_tiles() {
+        use std::collections::HashMap;
+
+        let slide = open_fixture();
+        let native_mpp = slide.metadata().microns_per_pixel().unwrap(); // 0.499
+        let tile_um = 240.0 * native_mpp;
+
+        let collect = |options: ExtractionOptions| -> HashMap<(u32, u32), Vec<u8>> {
+            let map = Mutex::new(HashMap::new());
+            slide
+                .extract(&options, &SlideOutputs::default(), |tile| {
+                    map.lock().unwrap().insert(
+                        (tile.tile_x(), tile.tile_y()),
+                        tile.image().to_rgb8().into_raw(),
+                    );
+                    Ok(())
+                })
+                .unwrap();
+            map.into_inner().unwrap()
+        };
+
+        let native = collect(ExtractionOptions::sequential().with_level(0));
+        let grid = collect(
+            ExtractionOptions::sequential()
+                .with_level(0)
+                .with_grid_geometry(240, tile_um, None),
+        );
+
+        // Grid drops the padded boundary row/column Native keeps: a 9x12
+        // window grid here, not Native's 10x13 -- see `window_count`.
+        assert_eq!(grid.len(), 9 * 12);
+
+        for (coord, grid_bytes) in &grid {
+            let native_bytes = native
+                .get(coord)
+                .unwrap_or_else(|| panic!("native tile missing at {coord:?}"));
+            assert_eq!(grid_bytes, native_bytes, "pixel mismatch at {coord:?}");
+        }
     }
 }

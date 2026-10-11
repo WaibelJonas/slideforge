@@ -33,6 +33,32 @@ pub enum ExtractionLevel {
     TargetMpp(f64),
 }
 
+/// Governs how tiles are laid out and read from a slide
+#[derive(Debug, Clone, Copy, Default)]
+pub enum TileGeometry {
+    /// Extract tiles directly from a slides native tile grid
+    /// No processing except resizing to fit target MPP
+    #[default]
+    Native,
+    /// Extract fixed-size tiles on a regular grid defined in physical
+    /// units, independent of the native tile grid -- matches the tiling
+    /// convention used by tools like slideflow.
+    ///
+    /// Windows that would extend past the resolved level's edge are
+    /// dropped entirely, rather than padded like `Native`'s boundary
+    /// tiles -- this means `Grid` can yield fewer tiles than `Native` at
+    /// an otherwise equivalent size (see [`Slide::extract`](crate::slide::Slide::extract)).
+    Grid {
+        /// Output tile size in pixels
+        tile_px: u32,
+        /// Output tile size in microns, later resized to fit `tile_px`
+        tile_um: f64,
+        /// Stride between tiles in microns
+        /// If `None`, this will default to `tile_um`, generating non-overlapping tiles
+        stride_um: Option<f64>,
+    },
+}
+
 /// Options controlling how tiles are decoded and processed during
 /// extraction. Contains no output destinations -- those are call-site
 /// arguments ([`SlideOutputs`](crate::slide::SlideOutputs),
@@ -55,6 +81,8 @@ pub struct ExtractionOptions {
     pub normalize_stain: bool,
     /// Target extraction level
     pub extraction_level: Option<ExtractionLevel>,
+    /// Tile geometry layout (either native tile grid or custom tile grid)
+    pub geometry: TileGeometry,
 }
 
 impl fmt::Debug for ExtractionOptions {
@@ -65,6 +93,7 @@ impl fmt::Debug for ExtractionOptions {
             .field("observer", &self.observer.is_some())
             .field("normalize_stain", &self.normalize_stain)
             .field("extraction_level", &self.extraction_level)
+            .field("geometry", &self.geometry)
             .finish()
     }
 }
@@ -78,6 +107,7 @@ impl ExtractionOptions {
             observer: None,
             normalize_stain: false,
             extraction_level: None,
+            geometry: TileGeometry::default(),
         }
     }
 
@@ -89,6 +119,7 @@ impl ExtractionOptions {
             observer: None,
             normalize_stain: false,
             extraction_level: None,
+            geometry: TileGeometry::default(),
         }
     }
 
@@ -104,6 +135,7 @@ impl ExtractionOptions {
             observer: None,
             normalize_stain: false,
             extraction_level: None,
+            geometry: TileGeometry::default(),
         }
     }
 
@@ -153,6 +185,22 @@ impl ExtractionOptions {
     /// Applies Reinhard stain normalization to tiles before extraction
     pub fn with_stain_normalization(mut self) -> Self {
         self.normalize_stain = true;
+        self
+    }
+
+    /// Extracts fixed-size windows on a regular grid defined in physical
+    /// units (see [`TileGeometry::Grid`]), instead of the native tile grid.
+    pub fn with_grid_geometry(
+        mut self,
+        tile_px: u32,
+        tile_um: f64,
+        stride_um: Option<f64>,
+    ) -> Self {
+        self.geometry = TileGeometry::Grid {
+            tile_px,
+            tile_um,
+            stride_um,
+        };
         self
     }
 
