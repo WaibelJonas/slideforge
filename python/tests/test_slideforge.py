@@ -73,3 +73,46 @@ def test_extract_and_extract_arrays_agree_on_kept_count(fixture_path):
     tiles = slideforge.extract_arrays(fixture_path, level=0, min_tissue_fraction=0.1)
 
     assert len(tiles) == kept
+
+
+# Grid mode: window size == native tile size (240px @ 0.499 mpp -> 119.76um),
+# same case the Rust invariant test uses.
+GRID_TILE_UM = 240.0 * 0.499
+
+
+def test_grid_mode_drops_boundary_windows_native_would_pad(fixture_path):
+    native_total = slideforge.extract(fixture_path, level=0)[1]
+    grid_total = slideforge.extract(fixture_path, level=0, tile_px=240, tile_um=GRID_TILE_UM)[1]
+
+    assert native_total == 130  # 10x13 native tile grid
+    assert grid_total == 108  # 9x12 -- Grid drops the padded boundary row/column
+
+
+def test_grid_mode_matches_native_pixel_for_pixel_over_their_overlap(fixture_path):
+    native = {(x, y): arr for x, y, arr in slideforge.extract_arrays(fixture_path, level=0)}
+    grid = slideforge.extract_arrays(fixture_path, level=0, tile_px=240, tile_um=GRID_TILE_UM)
+
+    assert len(grid) == 108
+    for x, y, arr in grid:
+        np.testing.assert_array_equal(arr, native[(x, y)])
+
+
+def test_grid_mode_resizes_output_to_tile_px(fixture_path):
+    tiles = slideforge.extract_arrays(fixture_path, level=0, tile_px=96, tile_um=GRID_TILE_UM)
+
+    assert len(tiles) == 108
+    for _x, _y, arr in tiles:
+        assert arr.shape == (96, 96, 3)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"tile_px": 240},
+        {"tile_um": GRID_TILE_UM},
+        {"stride_um": 50.0},
+    ],
+)
+def test_grid_params_must_be_given_together(fixture_path, kwargs):
+    with pytest.raises(ValueError):
+        slideforge.extract(fixture_path, level=0, **kwargs)

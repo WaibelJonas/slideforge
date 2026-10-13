@@ -93,13 +93,21 @@ impl CountingObserver {
 
 /// Builds [`ExtractionOptions`] from the keyword arguments shared by
 /// `extract` and `extract_arrays`. Exactly one of `level`/`target_mpp` must
-/// be given.
+/// be given -- it still selects which native pyramid level `Grid` windows
+/// get stitched from, same as it selects the extracted level for `Native`.
+/// `tile_px`/`tile_um` must be given together (or not at all); `stride_um`
+/// additionally requires them, and defaults to `tile_um` (non-overlapping
+/// windows) when omitted.
+#[allow(clippy::too_many_arguments)]
 fn build_options(
     level: Option<usize>,
     target_mpp: Option<f64>,
     min_tissue_fraction: Option<f32>,
     stain_normalize: bool,
     threads: Option<usize>,
+    tile_px: Option<u32>,
+    tile_um: Option<f64>,
+    stride_um: Option<f64>,
 ) -> PyResult<ExtractionOptions> {
     let mut options = match (level, target_mpp) {
         (Some(_), Some(_)) => {
@@ -127,11 +135,38 @@ fn build_options(
         options = options.with_stain_normalization();
     }
 
+    match (tile_px, tile_um) {
+        (Some(tile_px), Some(tile_um)) => {
+            options = options.with_grid_geometry(tile_px, tile_um, stride_um);
+        }
+        (None, None) => {
+            if stride_um.is_some() {
+                return Err(PyValueError::new_err(
+                    "stride_um requires tile_px and tile_um to also be set",
+                ));
+            }
+        }
+        _ => {
+            return Err(PyValueError::new_err(
+                "tile_px and tile_um must be given together",
+            ));
+        }
+    }
+
     Ok(options)
 }
 
 /// Extracts tiles from a slide, writing them as loose JPEGs and/or a
 /// `.tfrecord` file. Returns `(kept, total)` tile counts.
+///
+/// By default tiles come from the slide's native tile grid. Passing
+/// `tile_px` and `tile_um` together switches to `Grid` mode: fixed-size
+/// windows on a regular grid defined in physical units (optionally spaced
+/// by `stride_um`), independent of the native tile grid -- matching the
+/// tiling convention used by tools like slideflow. See
+/// `slideforge.TileGeometry` in the Rust docs for the boundary-handling
+/// difference this implies (`Grid` drops a trailing partial window rather
+/// than padding it like `Native` does).
 #[pyfunction]
 #[pyo3(signature = (
     path,
@@ -143,6 +178,9 @@ fn build_options(
     min_tissue_fraction=None,
     stain_normalize=false,
     threads=None,
+    tile_px=None,
+    tile_um=None,
+    stride_um=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn extract(
@@ -155,6 +193,9 @@ fn extract(
     min_tissue_fraction: Option<f32>,
     stain_normalize: bool,
     threads: Option<usize>,
+    tile_px: Option<u32>,
+    tile_um: Option<f64>,
+    stride_um: Option<f64>,
 ) -> PyResult<(usize, usize)> {
     py.detach(move || {
         let slide = Slide::open(&path).map_err(to_pyerr)?;
@@ -164,6 +205,9 @@ fn extract(
             min_tissue_fraction,
             stain_normalize,
             threads,
+            tile_px,
+            tile_um,
+            stride_um,
         )?;
 
         let counter = Arc::new(CountingObserver::default());
@@ -191,6 +235,9 @@ fn extract(
 /// Intended for small-scale/interactive use -- for anything at
 /// gigapixel-slide scale, prefer [`extract`]'s `.tfrecord` path, which
 /// never collects more than one tile's worth of pixels in memory at once.
+///
+/// Supports `Grid` mode the same way [`extract`] does -- see its docs for
+/// `tile_px`/`tile_um`/`stride_um`.
 #[pyfunction]
 #[pyo3(signature = (
     path,
@@ -199,7 +246,11 @@ fn extract(
     target_mpp=None,
     min_tissue_fraction=None,
     stain_normalize=false,
+    tile_px=None,
+    tile_um=None,
+    stride_um=None,
 ))]
+#[allow(clippy::too_many_arguments)]
 fn extract_arrays<'py>(
     py: Python<'py>,
     path: PathBuf,
@@ -207,6 +258,9 @@ fn extract_arrays<'py>(
     target_mpp: Option<f64>,
     min_tissue_fraction: Option<f32>,
     stain_normalize: bool,
+    tile_px: Option<u32>,
+    tile_um: Option<f64>,
+    stride_um: Option<f64>,
 ) -> PyResult<Vec<TileArray<'py>>> {
     // Collect raw pixel buffers with the GIL released -- constructing
     // `PyArray`s requires the GIL, so that happens afterwards instead.
@@ -218,6 +272,9 @@ fn extract_arrays<'py>(
             min_tissue_fraction,
             stain_normalize,
             None,
+            tile_px,
+            tile_um,
+            stride_um,
         )?;
 
         let collected = Mutex::new(Vec::new());

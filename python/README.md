@@ -40,6 +40,27 @@ for tile_x, tile_y, array in tiles:
 `extract` and `extract_arrays` each require exactly one of `level` (a specific pyramid level
 index) or `target_mpp` (a target microns-per-pixel resolution).
 
+### Grid mode
+
+By default tiles come from the slide's native tile grid. Passing `tile_px` and `tile_um` together
+switches to fixed-size windows on a regular grid defined in physical units, independent of the
+native tile grid -- matching the tiling convention used by tools like slideflow:
+
+```python
+tiles = slideforge.extract_arrays(
+    "slide.svs",
+    level=0,
+    tile_px=256,       # output tile size in pixels
+    tile_um=128.0,     # window size in microns, read at native resolution then resized to tile_px
+    stride_um=128.0,   # distance between window origins; omit for non-overlapping windows
+)
+```
+
+`tile_px`/`tile_um` must be given together (or not at all); `stride_um` additionally requires
+both. One behavior difference from native mode worth knowing: a trailing window that would extend
+past the slide's edge is **dropped**, not padded like a native boundary tile is -- so grid mode
+can yield fewer tiles than native mode at an otherwise-equivalent size.
+
 ## Testing
 
 ```sh
