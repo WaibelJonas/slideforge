@@ -97,7 +97,7 @@ impl CountingObserver {
 /// get stitched from, same as it selects the extracted level for `Native`.
 /// `tile_px`/`tile_um` must be given together (or not at all); `stride_um`
 /// additionally requires them, and defaults to `tile_um` (non-overlapping
-/// windows) when omitted.
+/// windows) when omitted. `jpeg_quality` must be within 1-100.
 #[allow(clippy::too_many_arguments)]
 fn build_options(
     level: Option<usize>,
@@ -108,6 +108,7 @@ fn build_options(
     tile_px: Option<u32>,
     tile_um: Option<f64>,
     stride_um: Option<f64>,
+    jpeg_quality: Option<u8>,
 ) -> PyResult<ExtractionOptions> {
     let mut options = match (level, target_mpp) {
         (Some(_), Some(_)) => {
@@ -133,6 +134,12 @@ fn build_options(
     }
     if stain_normalize {
         options = options.with_stain_normalization();
+    }
+    if let Some(quality) = jpeg_quality {
+        if !(1..=100).contains(&quality) {
+            return Err(PyValueError::new_err("jpeg_quality must be between 1 and 100"));
+        }
+        options = options.with_jpeg_quality(quality);
     }
 
     match (tile_px, tile_um) {
@@ -167,6 +174,9 @@ fn build_options(
 /// `slideforge.TileGeometry` in the Rust docs for the boundary-handling
 /// difference this implies (`Grid` drops a trailing partial window rather
 /// than padding it like `Native` does).
+///
+/// `jpeg_quality` (1-100, default 75) sets the quality tiles are encoded
+/// with for both outputs.
 #[pyfunction]
 #[pyo3(signature = (
     path,
@@ -181,6 +191,7 @@ fn build_options(
     tile_px=None,
     tile_um=None,
     stride_um=None,
+    jpeg_quality=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn extract(
@@ -196,6 +207,7 @@ fn extract(
     tile_px: Option<u32>,
     tile_um: Option<f64>,
     stride_um: Option<f64>,
+    jpeg_quality: Option<u8>,
 ) -> PyResult<(usize, usize)> {
     py.detach(move || {
         let slide = Slide::open(&path).map_err(to_pyerr)?;
@@ -208,6 +220,7 @@ fn extract(
             tile_px,
             tile_um,
             stride_um,
+            jpeg_quality,
         )?;
 
         let counter = Arc::new(CountingObserver::default());
@@ -275,6 +288,7 @@ fn extract_arrays<'py>(
             tile_px,
             tile_um,
             stride_um,
+            None,
         )?;
 
         let collected = Mutex::new(Vec::new());

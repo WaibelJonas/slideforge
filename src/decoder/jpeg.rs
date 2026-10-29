@@ -1,6 +1,6 @@
 //! JPEG decoding utilities for TIFF tile data.
 //!
-//! This module provides a thin wrapper around `jpeg-decoder` for decoding
+//! This module provides a thin wrapper around `zune-jpeg` for decoding
 //! JPEG-compressed TIFF tiles. Unlike standalone JPEG images, TIFF stores
 //! the intended color interpretation separately in the
 //! `PhotometricInterpretation` tag. The decoder therefore requires the
@@ -10,9 +10,10 @@ use std::io::Read;
 
 use crate::error::WsiError;
 use crate::tile::Photometric;
-use image::{DynamicImage, ImageBuffer, RgbImage};
-use jpeg_decoder::Decoder;
-use jpeg_decoder::PixelFormat;
+use image::{DynamicImage, GrayImage, RgbImage};
+use zune_jpeg::JpegDecoder as ZuneDecoder;
+use zune_jpeg::zune_core::bytestream::ZCursor;
+use zune_jpeg::zune_core::colorspace::ColorSpace;
 
 #[derive(Debug, Clone, PartialEq)]
 /// Decoder for JPEG-compressed TIFF tiles.
@@ -44,34 +45,49 @@ impl JpegDecoder {
     /// Returns [`WsiError`] if the JPEG stream cannot be decoded, contains
     /// unsupported pixel formats, or if the decoded image buffer is invalid.
     pub fn decode<R: Read>(
-        reader: R,
+        mut reader: R,
         color_transform: &Photometric,
     ) -> Result<DynamicImage, WsiError> {
-        let mut decoder = Decoder::new(reader);
-        decoder.set_color_transform(color_transform.jpeg_color_transform());
+        let mut jpeg = Vec::new();
+        reader.read_to_end(&mut jpeg)?;
+        Self::decode_bytes(&jpeg, color_transform)
+    }
+
+    /// Same as [`JpegDecoder::decode`], for a JPEG bitstream already in memory.
+    pub fn decode_bytes(
+        jpeg: &[u8],
+        color_transform: &Photometric,
+    ) -> Result<DynamicImage, WsiError> {
+        let mut decoder = ZuneDecoder::new(ZCursor::new(jpeg));
+        decoder
+            .decode_headers()
+            .map_err(|_| WsiError::UnsupportedFormat)?;
+
+        let input = decoder
+            .input_colorspace()
+            .ok_or(WsiError::InvalidMetadata)?;
+        let output = match (input, color_transform) {
+            (ColorSpace::Luma, _) => ColorSpace::Luma,
+            // Without a marker saying otherwise, a 3-component JPEG is assumed
+            // to be YCbCr. When the TIFF says the stream really holds RGB (as
+            // in Aperio SVS), "keeping" YCbCr returns the stored components
+            // untouched -- i.e. the RGB values, with no conversion applied.
+            (ColorSpace::YCbCr, Photometric::RGB) => ColorSpace::YCbCr,
+            _ => ColorSpace::RGB,
+        };
+        decoder.set_options(decoder.options().jpeg_set_out_colorspace(output));
 
         let pixels = decoder.decode().map_err(|_| WsiError::UnsupportedFormat)?;
-
         let info = decoder.info().ok_or(WsiError::InvalidMetadata)?;
+        let (width, height) = (u32::from(info.width), u32::from(info.height));
 
-        match info.pixel_format {
-            PixelFormat::RGB24 => {
-                let image: RgbImage =
-                    ImageBuffer::from_raw(info.width.into(), info.height.into(), pixels)
-                        .ok_or(WsiError::InvalidMetadata)?;
-
-                Ok(DynamicImage::ImageRgb8(image))
-            }
-
-            PixelFormat::L8 => {
-                let image =
-                    image::GrayImage::from_raw(info.width.into(), info.height.into(), pixels)
-                        .ok_or(WsiError::InvalidMetadata)?;
-
-                Ok(DynamicImage::ImageLuma8(image))
-            }
-
-            _ => Err(WsiError::UnsupportedFormat),
+        match output {
+            ColorSpace::Luma => GrayImage::from_raw(width, height, pixels)
+                .map(DynamicImage::ImageLuma8)
+                .ok_or(WsiError::InvalidMetadata),
+            _ => RgbImage::from_raw(width, height, pixels)
+                .map(DynamicImage::ImageRgb8)
+                .ok_or(WsiError::InvalidMetadata),
         }
     }
 }

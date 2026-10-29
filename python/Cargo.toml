@@ -12,3 +12,10 @@ crate-type = ["cdylib"]
 numpy = "0.29.0"
 pyo3 = { version = "0.29.3", features = ["abi3-py39", "extension-module"] }
 slideforge = { path = "..", default-features = false }
+
+# Mirrors the root crate's release profile -- this crate is built on its own
+# (not as a workspace member), so it doesn't inherit those settings.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

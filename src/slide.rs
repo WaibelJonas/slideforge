@@ -17,9 +17,10 @@ use crate::metadata::Metadata;
 use crate::tfrecord::TfRecordWriter;
 use crate::tile::{Tile, TileDirectory, read_tile_bytes, read_tile_bytes_at};
 use crate::{report, tfrecord};
-use image::{DynamicImage, RgbImage};
+use image::{DynamicImage, GrayImage, RgbImage};
 use rayon::prelude::*;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -45,6 +46,89 @@ fn window_count(level_dim: u32, window_px: u32, stride_px: u32) -> u32 {
         return 0;
     }
     (level_dim - window_px) / stride_px + 1
+}
+
+/// Truncates a size in (fractional) pixels to whole pixels, matching
+/// slideflow's `int(tile_um / mpp)`. The epsilon keeps a size that is
+/// meant to be exact (e.g. `n * mpp / mpp`) from flooring one pixel short
+/// due to float error. Never returns 0.
+fn whole_pixels(px: f64) -> u32 {
+    ((px + 1e-6).floor() as u32).max(1)
+}
+
+/// Runs `job` on `pool`, or on the current (default) rayon pool if `None`.
+fn install<T: Send>(pool: Option<&rayon::ThreadPool>, job: impl FnOnce() -> T + Send) -> T {
+    match pool {
+        Some(pool) => pool.install(job),
+        None => job(),
+    }
+}
+
+/// Copies the part of `tile` that overlaps `canvas` into it. Both origins
+/// are the images' top-left corners in the same (level) pixel space.
+fn blit(
+    canvas: &mut RgbImage,
+    canvas_origin: (u32, u32),
+    tile: &RgbImage,
+    tile_origin: (u32, u32),
+) {
+    let x0 = canvas_origin.0.max(tile_origin.0);
+    let y0 = canvas_origin.1.max(tile_origin.1);
+    let x1 = (canvas_origin.0 + canvas.width()).min(tile_origin.0 + tile.width());
+    let y1 = (canvas_origin.1 + canvas.height()).min(tile_origin.1 + tile.height());
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    let row_bytes = (x1 - x0) as usize * 3;
+    let (canvas_stride, tile_stride) = (canvas.width() as usize * 3, tile.width() as usize * 3);
+    let canvas_x = (x0 - canvas_origin.0) as usize * 3;
+    let tile_x = (x0 - tile_origin.0) as usize * 3;
+    let tile_pixels: &[u8] = tile;
+    let canvas_pixels: &mut [u8] = canvas;
+    for y in y0..y1 {
+        let dst = (y - canvas_origin.1) as usize * canvas_stride + canvas_x;
+        let src = (y - tile_origin.1) as usize * tile_stride + tile_x;
+        canvas_pixels[dst..dst + row_bytes].copy_from_slice(&tile_pixels[src..src + row_bytes]);
+    }
+}
+
+/// The lowest-resolution pyramid level in grayscale, used as a
+/// low-resolution tissue mask for the extraction level.
+struct TissueOverview {
+    gray: GrayImage,
+    /// Otsu threshold derived from the whole overview
+    threshold: u8,
+    /// Overview pixels per extraction-level pixel, per axis
+    scale_x: f64,
+    scale_y: f64,
+}
+
+impl TissueOverview {
+    /// Fraction of tissue (at or below `threshold`) in the overview pixels
+    /// covering the given extraction-level rectangle. Partially covered
+    /// overview pixels count fully, and a rectangle always covers at least
+    /// one pixel.
+    fn tissue_fraction(&self, x: u32, y: u32, width: u32, height: u32) -> f32 {
+        let (gray_w, gray_h) = self.gray.dimensions();
+        if gray_w == 0 || gray_h == 0 {
+            return 1.0;
+        }
+        let span = |start: u32, len: u32, scale: f64, max: u32| {
+            let lo = ((start as f64 * scale).floor() as u32).min(max - 1);
+            let hi = (((start + len) as f64 * scale).ceil() as u32).clamp(lo + 1, max);
+            lo..hi
+        };
+        let xs = span(x, width, self.scale_x, gray_w);
+        let ys = span(y, height, self.scale_y, gray_h);
+
+        let total = xs.len() * ys.len();
+        let tissue = ys
+            .flat_map(|py| xs.clone().map(move |px| (px, py)))
+            .filter(|&(px, py)| self.gray.get_pixel(px, py).0[0] <= self.threshold)
+            .count();
+        tissue as f32 / total as f32
+    }
 }
 
 /// Small tile grid paramater wrapper for later use in slide::extract
@@ -335,36 +419,12 @@ impl Slide {
 
         for ty in tile_y0..=tile_y1.min(level.tiles_y().saturating_sub(1)) {
             for tx in tile_x0..=tile_x1.min(level.tiles_x().saturating_sub(1)) {
-                let tile = self.decode_tile_concurrent(level_idx, tx, ty)?;
-                let cropped = self.cropped_image(level_idx, &tile)?;
-                let (valid_w, valid_h) = (cropped.width(), cropped.height());
-
-                let tile_px_x0 = tx * tile_size.width;
-                let tile_px_y0 = ty * tile_size.height;
-
-                let overlap_x0 = x.max(tile_px_x0);
-                let overlap_y0 = y.max(tile_px_y0);
-                let overlap_x1 = (x + width).min(tile_px_x0 + valid_w);
-                let overlap_y1 = (y + height).min(tile_px_y0 + valid_h);
-
-                if overlap_x0 >= overlap_x1 || overlap_y0 >= overlap_y1 {
-                    continue;
-                }
-
-                let sub = cropped
-                    .crop_imm(
-                        overlap_x0 - tile_px_x0,
-                        overlap_y0 - tile_px_y0,
-                        overlap_x1 - overlap_x0,
-                        overlap_y1 - overlap_y0,
-                    )
-                    .to_rgb8();
-
-                image::imageops::replace(
+                let tile = self.decode_tile_rgb(level_idx, tx, ty, true)?;
+                blit(
                     &mut canvas,
-                    &sub,
-                    (overlap_x0 - x) as i64,
-                    (overlap_y0 - y) as i64,
+                    (x, y),
+                    &tile,
+                    (tx * tile_size.width, ty * tile_size.height),
                 );
             }
         }
@@ -372,43 +432,125 @@ impl Slide {
         Ok(DynamicImage::ImageRgb8(canvas))
     }
 
-    /// Decodes one [`TileGeometry::Grid`] window at grid coordinate
-    /// `(col, row)` into a [`Tile`] already resized to `params.tile_px`.
-    fn decode_grid_tile(
+    /// Decodes a native tile as RGB, cropped to its valid (non-padding)
+    /// area. `concurrent` picks the positional-read path, which is safe to
+    /// call from several threads at once.
+    fn decode_tile_rgb(
         &self,
         level_idx: usize,
-        col: u32,
-        row: u32,
+        tile_x: u32,
+        tile_y: u32,
+        concurrent: bool,
+    ) -> Result<RgbImage, WsiError> {
+        let tile = if concurrent {
+            self.decode_tile_concurrent(level_idx, tile_x, tile_y)?
+        } else {
+            self.decode_tile(level_idx, tile_x, tile_y)?
+        };
+        Ok(self.cropped_image(level_idx, &tile)?.to_rgb8())
+    }
+
+    /// Cuts every [`TileGeometry::Grid`] window kept by `keep` out of the
+    /// level and passes it to `process`, at window size (not yet resized to
+    /// `params.tile_px`).
+    ///
+    /// Windows are handled one row at a time: every native tile the row's
+    /// kept windows overlap is decoded exactly once and cached until no
+    /// later row needs it, instead of each window decoding its own
+    /// overlapping tiles (with 256px native tiles and ~300px windows,
+    /// that's ~4.7 decodes per window, each native tile decoded ~3 times).
+    /// The cache holds at most the native rows one window row spans.
+    #[allow(clippy::too_many_arguments)]
+    fn extract_grid<K, P>(
+        &self,
+        level_idx: usize,
         params: &GridParams,
-        downsample_factor: f64,
-    ) -> Result<Tile, WsiError> {
-        let origin_x_at_level = col * params.stride_px;
-        let origin_y_at_level = row * params.stride_px;
+        cols: u32,
+        rows: u32,
+        parallel: bool,
+        keep: K,
+        process: P,
+    ) -> Result<(), WsiError>
+    where
+        K: Fn(u32, u32) -> bool + Sync,
+        P: Fn(Tile) -> Result<(), WsiError> + Sync,
+    {
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+        let (tile_w, tile_h) = (level.tile_size().width, level.tile_size().height);
+        let downsample_factor = level.downsample_factor();
+        let window_px = params.window_px;
 
-        let region = self.read_region(
-            level_idx,
-            origin_x_at_level,
-            origin_y_at_level,
-            params.window_px,
-            params.window_px,
-        )?;
-        let resized = region.resize_exact(
-            params.tile_px,
-            params.tile_px,
-            image::imageops::FilterType::Triangle,
-        );
+        let mut cache: HashMap<(u32, u32), RgbImage> = HashMap::new();
 
-        let origin_x_base = (origin_x_at_level as f64 * downsample_factor).round() as u32;
-        let origin_y_base = (origin_y_at_level as f64 * downsample_factor).round() as u32;
+        for row in 0..rows {
+            let y = row * params.stride_px;
+            let (ty0, ty1) = (y / tile_h, (y + window_px - 1) / tile_h);
+            let tile_cols = |col: u32| {
+                let x = col * params.stride_px;
+                x / tile_w..=(x + window_px - 1) / tile_w
+            };
 
-        Ok(Tile::new(
-            resized,
-            level_idx,
-            col,
-            row,
-            origin_x_base,
-            origin_y_base,
-        ))
+            // Window rows only move down, so native rows above this one are done
+            cache.retain(|&(_, ty), _| ty >= ty0);
+
+            let kept: Vec<u32> = (0..cols).filter(|&col| keep(col, row)).collect();
+            if kept.is_empty() {
+                continue;
+            }
+
+            // In storage (row-major) order, for the sequential buffered reader
+            let mut missing: Vec<(u32, u32)> = (ty0..=ty1)
+                .flat_map(|ty| {
+                    kept.iter()
+                        .flat_map(|&col| tile_cols(col))
+                        .map(move |tx| (tx, ty))
+                })
+                .filter(|key| !cache.contains_key(key))
+                .collect();
+            missing.sort_unstable_by_key(|&(tx, ty)| (ty, tx));
+            missing.dedup();
+
+            let decode = |&(tx, ty): &(u32, u32)| {
+                self.decode_tile_rgb(level_idx, tx, ty, parallel)
+                    .map(|tile| ((tx, ty), tile))
+            };
+            let decoded: Vec<_> = if parallel {
+                missing.par_iter().map(decode).collect::<Result<_, _>>()?
+            } else {
+                missing.iter().map(decode).collect::<Result<_, _>>()?
+            };
+            cache.extend(decoded);
+
+            let cut = |&col: &u32| -> Result<(), WsiError> {
+                let x = col * params.stride_px;
+                let mut window = RgbImage::new(window_px, window_px);
+                for ty in ty0..=ty1 {
+                    for tx in tile_cols(col) {
+                        if let Some(tile) = cache.get(&(tx, ty)) {
+                            blit(&mut window, (x, y), tile, (tx * tile_w, ty * tile_h));
+                        }
+                    }
+                }
+                process(Tile::new(
+                    DynamicImage::ImageRgb8(window),
+                    level_idx,
+                    col,
+                    row,
+                    (x as f64 * downsample_factor).round() as u32,
+                    (y as f64 * downsample_factor).round() as u32,
+                ))
+            };
+            if parallel {
+                kept.par_iter().try_for_each(cut)?;
+            } else {
+                kept.iter().try_for_each(cut)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns an iterator over the tile coordinates (tile_x, tile_y) for the specified level.
@@ -477,27 +619,67 @@ impl Slide {
         }
     }
 
-    /// Computes a single Otsu threshold for tissue/background separation
-    /// from the aggregated grayscale histogram of every tile at the
-    /// lowest-resolution pyramid level.
-    ///
-    /// Tiles are classified against this shared reference point instead of
-    /// each deriving its own threshold in isolation, which would let Otsu
-    /// invent a spurious tissue/background split on a tile that is
-    /// actually uniform background (or uniform tissue).
-    fn global_tissue_threshold(&self) -> Result<u8, WsiError> {
+    /// Stitches the lowest-resolution pyramid level into a single image,
+    /// decoding its tiles on the current rayon pool when `parallel`.
+    fn lowest_level_image(&self, parallel: bool) -> Result<RgbImage, WsiError> {
         let level_idx = self.level_count() - 1;
-        let mut histogram = [0u32; 256];
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+        let tile_size = level.tile_size();
 
-        for (x, y) in self.tile_coords(level_idx)? {
-            let tile = self.decode_tile(level_idx, x, y)?;
-            let cropped = self.cropped_image(level_idx, &tile)?;
-            for (bin, count) in grayscale_histogram(&cropped.to_luma8()).iter().enumerate() {
-                histogram[bin] += count;
-            }
+        let coords: Vec<(u32, u32)> = self.tile_coords(level_idx)?.collect();
+        let decode = |&(x, y): &(u32, u32)| {
+            self.decode_tile_rgb(level_idx, x, y, parallel)
+                .map(|tile| ((x, y), tile))
+        };
+        let tiles: Vec<_> = if parallel {
+            coords.par_iter().map(decode).collect::<Result<_, _>>()?
+        } else {
+            coords.iter().map(decode).collect::<Result<_, _>>()?
+        };
+
+        let dimensions = level.dimensions();
+        let mut canvas = RgbImage::new(dimensions.width, dimensions.height);
+        for ((x, y), tile) in &tiles {
+            blit(
+                &mut canvas,
+                (0, 0),
+                tile,
+                (x * tile_size.width, y * tile_size.height),
+            );
         }
+        Ok(canvas)
+    }
 
-        Ok(otsu_threshold_from_histogram(&histogram))
+    /// Builds a [`TissueOverview`] of the lowest-resolution pyramid level
+    /// for classifying regions of `level_idx`.
+    ///
+    /// Its single Otsu threshold comes from the aggregated grayscale
+    /// histogram of the whole level. Tiles are classified against this
+    /// shared reference point instead of each deriving its own threshold in
+    /// isolation, which would let Otsu invent a spurious tissue/background
+    /// split on a tile that is actually uniform background (or uniform
+    /// tissue).
+    fn tissue_overview(
+        &self,
+        level_idx: usize,
+        parallel: bool,
+    ) -> Result<TissueOverview, WsiError> {
+        let level = self
+            .metadata
+            .level(level_idx)
+            .ok_or(WsiError::LevelIndexOutOfBounds)?;
+        let gray = DynamicImage::ImageRgb8(self.lowest_level_image(parallel)?).into_luma8();
+        let threshold = otsu_threshold_from_histogram(&grayscale_histogram(&gray));
+
+        Ok(TissueOverview {
+            scale_x: gray.width() as f64 / level.dimensions().width as f64,
+            scale_y: gray.height() as f64 / level.dimensions().height as f64,
+            gray,
+            threshold,
+        })
     }
 
     /// Resolves the index of the pyramid level
@@ -556,8 +738,8 @@ impl Slide {
                 let level_mpp = base_mpp * level.downsample_factor();
                 Some(GridParams {
                     tile_px: *tile_px,
-                    window_px: (tile_um / level_mpp).round() as u32,
-                    stride_px: (stride_um.unwrap_or(*tile_um) / level_mpp).round() as u32,
+                    window_px: whole_pixels(tile_um / level_mpp),
+                    stride_px: whole_pixels(stride_um.unwrap_or(*tile_um) / level_mpp),
                 })
             }
             TileGeometry::Native => None,
@@ -589,22 +771,19 @@ impl Slide {
             _ => None,
         };
 
-        let coords: Vec<(u32, u32)> = match &grid_params {
-            Some(params) => {
-                let cols =
-                    window_count(level.dimensions().width, params.window_px, params.stride_px);
-                let rows = window_count(
+        // Grid windows, or native tiles, per row and column
+        let (cols, rows) = match &grid_params {
+            Some(params) => (
+                window_count(level.dimensions().width, params.window_px, params.stride_px),
+                window_count(
                     level.dimensions().height,
                     params.window_px,
                     params.stride_px,
-                );
-                (0..rows)
-                    .flat_map(|row| (0..cols).map(move |col| (col, row)))
-                    .collect()
-            }
-            None => self.tile_coords(level_idx)?.collect(),
+                ),
+            ),
+            None => (level.tiles_x(), level.tiles_y()),
         };
-        let total_tiles = coords.len();
+        let total_tiles = cols as usize * rows as usize;
         let dropped_tiles = AtomicUsize::new(0);
 
         let slide_name = self
@@ -650,14 +829,60 @@ impl Slide {
             observer.on_extraction_start(level_idx, total_tiles);
         }
 
+        let parallel = matches!(options.parallelism, Parallelism::Parallel(_));
+        let pool = match options.parallelism {
+            Parallelism::Parallel(Some(n)) => {
+                Some(rayon::ThreadPoolBuilder::new().num_threads(n).build()?)
+            }
+            _ => None,
+        };
+
         // A single, shared threshold derived from the lowest-resolution
         // level. Deriving a threshold per-tile instead would let Otsu
         // invent a bogus tissue/background split on tiles that are
         // actually uniform background.
-        let tissue_threshold = options
+        let tissue_overview = options
             .min_tissue_fraction
-            .map(|_| self.global_tissue_threshold())
+            .map(|_| install(pool.as_ref(), || self.tissue_overview(level_idx, parallel)))
             .transpose()?;
+        let tissue_threshold = tissue_overview.as_ref().map(|overview| overview.threshold);
+
+        let record_drop = |col: u32, row: u32, tissue_fraction: f32, min_fraction: f32| {
+            dropped_tiles.fetch_add(1, Ordering::Relaxed);
+            if let Some(observer) = &effective_observer {
+                observer.on_tile_dropped(level_idx, col, row, tissue_fraction, min_fraction);
+            }
+        };
+
+        // Drops background on the low-resolution overview, before anything
+        // at `level_idx` is read. Kept tiles are still checked at full
+        // resolution in `process`.
+        let keep = |col: u32, row: u32| -> bool {
+            let (Some(min_fraction), Some(overview)) =
+                (options.min_tissue_fraction, &tissue_overview)
+            else {
+                return true;
+            };
+            let (x, y, width, height) = match &grid_params {
+                Some(params) => (
+                    col * params.stride_px,
+                    row * params.stride_px,
+                    params.window_px,
+                    params.window_px,
+                ),
+                None => {
+                    let tile_size = level.tile_size();
+                    let (width, height) = level.valid_tile_dimensions(col, row);
+                    (col * tile_size.width, row * tile_size.height, width, height)
+                }
+            };
+            let tissue_fraction = overview.tissue_fraction(x, y, width, height);
+            if tissue_fraction < min_fraction {
+                record_drop(col, row, tissue_fraction, min_fraction);
+                return false;
+            }
+            true
+        };
 
         let process = |tile: Tile| -> Result<(), WsiError> {
             if let (Some(min_fraction), Some(threshold)) =
@@ -669,16 +894,12 @@ impl Slide {
                 };
                 let tissue_mask = TissueMask::compute_with_threshold(&cropped, threshold);
                 if !tissue_mask.has_more_than_min_tissue(min_fraction) {
-                    dropped_tiles.fetch_add(1, Ordering::Relaxed);
-                    if let Some(observer) = &effective_observer {
-                        observer.on_tile_dropped(
-                            level_idx,
-                            tile.tile_x(),
-                            tile.tile_y(),
-                            tissue_mask.tissue_fraction(),
-                            min_fraction,
-                        );
-                    }
+                    record_drop(
+                        tile.tile_x(),
+                        tile.tile_y(),
+                        tissue_mask.tissue_fraction(),
+                        min_fraction,
+                    );
                     return Ok(());
                 }
             }
@@ -689,24 +910,32 @@ impl Slide {
             };
 
             // Resizing after tissue-filtering/normalization
-            let tile = if let Some(scale) = resize_factor {
-                if (scale - 1.0).abs() > RESIZE_SCALE_EPSILON {
+            let tile = match (&grid_params, resize_factor) {
+                (Some(params), _) if params.window_px != params.tile_px => {
+                    tile.resize(params.tile_px, params.tile_px)
+                }
+                (None, Some(scale)) if (scale - 1.0).abs() > RESIZE_SCALE_EPSILON => {
                     let (width, height) = (tile.image().width(), tile.image().height());
                     let new_width = ((width as f64) * scale).round().max(1.0) as u32;
                     let new_height = ((height as f64) * scale).round().max(1.0) as u32;
                     tile.resize(new_width, new_height)
-                } else {
-                    tile
                 }
-            } else {
-                tile
+                _ => tile,
             };
 
-            if let Some(dir) = &outputs.tile_dir {
-                tile.save(dir.join(format!("{}_{}.jpg", tile.tile_x(), tile.tile_y())))?;
+            // Encoded once, shared by both file outputs
+            let jpeg = if outputs.tile_dir.is_some() || tfrecord_writer.is_some() {
+                Some(tile.encode_jpeg_with_quality(options.jpeg_quality)?)
+            } else {
+                None
+            };
+            if let (Some(dir), Some(bytes)) = (&outputs.tile_dir, &jpeg) {
+                std::fs::write(
+                    dir.join(format!("{}_{}.jpg", tile.tile_x(), tile.tile_y())),
+                    bytes,
+                )?;
             }
-            if let Some(writer) = &tfrecord_writer {
-                let bytes = tile.encode_jpeg()?;
+            if let (Some(writer), Some(bytes)) = (&tfrecord_writer, jpeg) {
                 let loc_x = (tile.origin_x() + footprint_w / 2) as i64;
                 let loc_y = (tile.origin_y() + footprint_h / 2) as i64;
 
@@ -722,42 +951,27 @@ impl Slide {
             f(tile)
         };
 
-        let result = match options.parallelism {
-            Parallelism::Sequential => coords.into_iter().try_for_each(|(x, y)| {
-                let tile = match &grid_params {
-                    Some(params) => {
-                        self.decode_grid_tile(level_idx, x, y, params, level.downsample_factor())?
-                    }
-                    None => self.decode_tile(level_idx, x, y)?,
-                };
-                process(tile)
-            }),
-            Parallelism::Parallel(threads) => {
-                let run = || {
-                    coords.into_par_iter().try_for_each(|(x, y)| {
-                        let tile = match &grid_params {
-                            Some(params) => self.decode_grid_tile(
-                                level_idx,
-                                x,
-                                y,
-                                params,
-                                level.downsample_factor(),
-                            )?,
-                            None => self.decode_tile_concurrent(level_idx, x, y)?,
-                        };
-                        process(tile)
-                    })
-                };
-
-                match threads {
-                    Some(n) => rayon::ThreadPoolBuilder::new()
-                        .num_threads(n)
-                        .build()?
-                        .install(run),
-                    None => run(),
+        let result = install(pool.as_ref(), || match &grid_params {
+            Some(params) => {
+                self.extract_grid(level_idx, params, cols, rows, parallel, keep, process)
+            }
+            None => {
+                let coords = (0..rows).flat_map(|row| (0..cols).map(move |col| (col, row)));
+                if parallel {
+                    let coords: Vec<_> = coords.collect();
+                    coords
+                        .into_par_iter()
+                        .filter(|&(x, y)| keep(x, y))
+                        .try_for_each(|(x, y)| {
+                            process(self.decode_tile_concurrent(level_idx, x, y)?)
+                        })
+                } else {
+                    coords
+                        .filter(|&(x, y)| keep(x, y))
+                        .try_for_each(|(x, y)| process(self.decode_tile(level_idx, x, y)?))
                 }
             }
-        };
+        });
 
         if options.min_tissue_fraction.is_some()
             && let Some(observer) = &effective_observer
@@ -783,29 +997,7 @@ impl Slide {
 
     /// Stitches lowest-resolution pyramid level into a single image for use as a thumbnail.
     pub fn build_overview_image(&self) -> Result<DynamicImage, WsiError> {
-        let level_idx = self.level_count() - 1;
-        let level = self
-            .metadata
-            .level(level_idx)
-            .ok_or(WsiError::LevelIndexOutOfBounds)?;
-
-        let dimensions = level.dimensions();
-        let mut canvas = RgbImage::new(dimensions.width, dimensions.height);
-
-        for (x, y) in self.tile_coords(level_idx)? {
-            let tile = self.decode_tile(level_idx, x, y)?;
-            let cropped = self.cropped_image(level_idx, &tile)?;
-            let cropped_rgb = cropped.to_rgb8();
-
-            let origin_x = x * level.tile_size().width;
-            let origin_y = y * level.tile_size().height;
-
-            for (px, py, pixel) in cropped_rgb.enumerate_pixels() {
-                canvas.put_pixel(origin_x + px, origin_y + py, *pixel);
-            }
-        }
-
-        let overview = DynamicImage::ImageRgb8(canvas);
+        let overview = DynamicImage::ImageRgb8(self.lowest_level_image(false)?);
         let max_dim = overview.width().max(overview.height());
 
         Ok(if max_dim > report::OVERVIEW_MAX_PX {
@@ -875,6 +1067,14 @@ mod tests {
         assert_eq!(window_count(1000, 300, 300), 3); // remainder dropped, not padded
         assert_eq!(window_count(100, 300, 300), 0); // window larger than the level
         assert_eq!(window_count(1000, 300, 150), 5); // overlapping stride
+    }
+
+    #[test]
+    fn whole_pixels_truncates_but_tolerates_float_error() {
+        assert_eq!(whole_pixels(298.9), 298); // truncated like slideflow, not rounded
+        assert_eq!(whole_pixels(298.0 * 0.499 / 0.499), 298);
+        assert_eq!(whole_pixels(297.999_999_9), 298); // float error, not a real fraction
+        assert_eq!(whole_pixels(0.4), 1); // never a zero-sized window
     }
 
     #[test]
@@ -1142,5 +1342,127 @@ mod tests {
                 .unwrap_or_else(|| panic!("native tile missing at {coord:?}"));
             assert_eq!(grid_bytes, native_bytes, "pixel mismatch at {coord:?}");
         }
+    }
+
+    #[test]
+    fn grid_windows_match_read_region_with_overlapping_misaligned_stride() {
+        use std::collections::HashMap;
+
+        let slide = open_fixture();
+        let mpp = slide.metadata().microns_per_pixel().unwrap();
+        // 300px windows every 260px: neither lines up with the 240px native
+        // tiles, and consecutive window rows share native rows
+        let (window, stride) = (300u32, 260u32);
+
+        for options in [
+            ExtractionOptions::sequential(),
+            ExtractionOptions::parallel(),
+        ] {
+            let options = options.with_level(0).with_grid_geometry(
+                window,
+                window as f64 * mpp,
+                Some(stride as f64 * mpp),
+            );
+            let tiles = Mutex::new(HashMap::new());
+            slide
+                .extract(&options, &SlideOutputs::default(), |tile| {
+                    tiles.lock().unwrap().insert(
+                        (tile.tile_x(), tile.tile_y()),
+                        tile.image().to_rgb8().into_raw(),
+                    );
+                    Ok(())
+                })
+                .unwrap();
+            let tiles = tiles.into_inner().unwrap();
+
+            assert_eq!(
+                tiles.len(),
+                (window_count(2220, window, stride) * window_count(2967, window, stride)) as usize
+            );
+            for (&(col, row), pixels) in &tiles {
+                let expected = slide
+                    .read_region(0, col * stride, row * stride, window, window)
+                    .unwrap()
+                    .to_rgb8()
+                    .into_raw();
+                assert!(*pixels == expected, "pixel mismatch at {:?}", (col, row));
+            }
+        }
+    }
+
+    #[test]
+    fn grid_tiles_are_resized_to_tile_px() {
+        let slide = open_fixture();
+        let mpp = slide.metadata().microns_per_pixel().unwrap();
+
+        let sizes = Mutex::new(Vec::new());
+        let options = ExtractionOptions::parallel()
+            .with_level(0)
+            .with_grid_geometry(128, 298.0 * mpp, None);
+        slide
+            .extract(&options, &SlideOutputs::default(), |tile| {
+                sizes
+                    .lock()
+                    .unwrap()
+                    .push((tile.image().width(), tile.image().height()));
+                Ok(())
+            })
+            .unwrap();
+
+        let sizes = sizes.into_inner().unwrap();
+        assert_eq!(sizes.len(), (7 * 9) as usize); // 2220 / 298, 2967 / 298
+        assert!(sizes.iter().all(|&size| size == (128, 128)));
+    }
+
+    #[test]
+    fn blit_copies_only_the_overlap() {
+        let tile = RgbImage::from_fn(4, 4, |x, y| image::Rgb([x as u8, y as u8, 7]));
+        let mut canvas = RgbImage::new(4, 4);
+        // Canvas covers (10..14, 10..14), tile covers (12..16, 9..13)
+        blit(&mut canvas, (10, 10), &tile, (12, 9));
+
+        for (x, y, pixel) in canvas.enumerate_pixels() {
+            let expected = if x >= 2 && y <= 2 {
+                image::Rgb([(x - 2) as u8, (y + 1) as u8, 7])
+            } else {
+                image::Rgb([0, 0, 0])
+            };
+            assert_eq!(*pixel, expected, "at ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn tissue_overview_measures_the_covered_overview_pixels() {
+        // Left half tissue (dark), right half background, at 1/10th of the
+        // extraction level's resolution
+        let gray = GrayImage::from_fn(10, 10, |x, _| image::Luma([if x < 5 { 50 } else { 230 }]));
+        let overview = TissueOverview {
+            gray,
+            threshold: 128,
+            scale_x: 0.1,
+            scale_y: 0.1,
+        };
+
+        assert_eq!(overview.tissue_fraction(0, 0, 50, 100), 1.0);
+        assert_eq!(overview.tissue_fraction(50, 0, 50, 100), 0.0);
+        assert_eq!(overview.tissue_fraction(0, 0, 100, 100), 0.5);
+        // Partially covered overview pixels count fully: 45..55 spans x=4..6
+        assert_eq!(overview.tissue_fraction(45, 0, 10, 10), 0.5);
+        // A sub-pixel region still samples one pixel; past the edge clamps
+        assert_eq!(overview.tissue_fraction(1, 1, 1, 1), 1.0);
+        assert_eq!(overview.tissue_fraction(500, 500, 10, 10), 0.0);
+    }
+
+    #[test]
+    fn tissue_overview_matches_the_lowest_level() {
+        let slide = open_fixture();
+        let overview = slide.tissue_overview(0, true).unwrap();
+        let sequential = slide.tissue_overview(0, false).unwrap();
+
+        // Single-level fixture: the overview *is* level 0
+        assert_eq!(overview.gray.dimensions(), (2220, 2967));
+        assert_eq!((overview.scale_x, overview.scale_y), (1.0, 1.0));
+        assert_eq!(overview.gray, sequential.gray);
+        assert_eq!(overview.threshold, sequential.threshold);
     }
 }

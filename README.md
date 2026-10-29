@@ -67,7 +67,7 @@ The above example extracts tiles from `slide.svs`, resampled to 0.5 microns-per-
 mostly background, applies Reinhard stain normalization, saves loose `.jpg`
 tiles to `tiles/`, and writes a PDF extraction report. A `.tfrecord` is
 always written alongside (default: `<slide-stem>.tfrecord`, override with
-`--tfrecord-file`).
+`--tfrecord-file`). Tiles are encoded at JPEG quality 75 unless `--jpeg-quality` says otherwise.
 
     slideforge dataset ./slides ./output --target-mpp 0.5 --min-tissue-fraction 0.1 --report dataset_report.pdf
 

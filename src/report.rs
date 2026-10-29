@@ -59,6 +59,7 @@ struct OptionsSummary {
     parallelism: Parallelism,
     min_tissue_fraction: Option<f32>,
     normalize_stain: bool,
+    jpeg_quality: u8,
 }
 
 impl From<&ExtractionOptions> for OptionsSummary {
@@ -67,6 +68,7 @@ impl From<&ExtractionOptions> for OptionsSummary {
             parallelism: options.parallelism,
             min_tissue_fraction: options.min_tissue_fraction,
             normalize_stain: options.normalize_stain,
+            jpeg_quality: options.jpeg_quality,
         }
     }
 }
@@ -302,6 +304,7 @@ impl ExtractionReport {
                     "off"
                 }
             ),
+            format!("JPEG quality: {}", self.options.jpeg_quality),
         ];
         for line in &pipeline_lines {
             push_text(ops, font, 10.0, left_x, left_y, line);
@@ -812,6 +815,7 @@ impl DatasetReport {
                     "off"
                 }
             ),
+            format!("JPEG quality: {}", self.options.jpeg_quality),
         ];
         for line in &pipeline_lines {
             push_text(&mut ops, font, 10.0, left_x, left_y, line);

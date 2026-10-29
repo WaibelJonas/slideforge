@@ -65,7 +65,7 @@ pub enum TileGeometry {
 /// [`DatasetOutputs`](crate::dataset::DatasetOutputs)) since they differ
 /// per slide, while these options are meant to be reused identically
 /// across every slide in a dataset.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ExtractionOptions {
     pub parallelism: Parallelism,
     /// Minimum Otsu-derived tissue fraction a tile must have to be kept
@@ -83,6 +83,19 @@ pub struct ExtractionOptions {
     pub extraction_level: Option<ExtractionLevel>,
     /// Tile geometry layout (either native tile grid or custom tile grid)
     pub geometry: TileGeometry,
+    /// JPEG quality (1-100) tiles are encoded with for loose `.jpg` and
+    /// `.tfrecord` outputs. Defaults to [`DEFAULT_JPEG_QUALITY`].
+    pub jpeg_quality: u8,
+}
+
+/// JPEG quality used unless [`ExtractionOptions::with_jpeg_quality`]
+/// overrides it.
+pub const DEFAULT_JPEG_QUALITY: u8 = 75;
+
+impl Default for ExtractionOptions {
+    fn default() -> Self {
+        Self::sequential()
+    }
 }
 
 impl fmt::Debug for ExtractionOptions {
@@ -94,6 +107,7 @@ impl fmt::Debug for ExtractionOptions {
             .field("normalize_stain", &self.normalize_stain)
             .field("extraction_level", &self.extraction_level)
             .field("geometry", &self.geometry)
+            .field("jpeg_quality", &self.jpeg_quality)
             .finish()
     }
 }
@@ -108,6 +122,7 @@ impl ExtractionOptions {
             normalize_stain: false,
             extraction_level: None,
             geometry: TileGeometry::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         }
     }
 
@@ -120,6 +135,7 @@ impl ExtractionOptions {
             normalize_stain: false,
             extraction_level: None,
             geometry: TileGeometry::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         }
     }
 
@@ -136,6 +152,7 @@ impl ExtractionOptions {
             normalize_stain: false,
             extraction_level: None,
             geometry: TileGeometry::default(),
+            jpeg_quality: DEFAULT_JPEG_QUALITY,
         }
     }
 
@@ -204,6 +221,17 @@ impl ExtractionOptions {
         self
     }
 
+    /// Encodes `.jpg`/`.tfrecord` tiles at the given JPEG quality, clamped
+    /// to 1-100. Below 90, chroma is subsampled 4:2:0 (like libjpeg's
+    /// default); from 90 up, it is kept at full resolution.
+    ///
+    /// # Arguments
+    /// * `quality` - The JPEG quality, 1 (smallest) to 100 (best).
+    pub fn with_jpeg_quality(mut self, quality: u8) -> Self {
+        self.jpeg_quality = quality.clamp(1, 100);
+        self
+    }
+
     pub fn with_level(mut self, level_idx: usize) -> Self {
         self.extraction_level = Some(ExtractionLevel::Index(level_idx));
         self
@@ -262,6 +290,30 @@ mod tests {
             options.extraction_level,
             Some(ExtractionLevel::TargetMpp(mpp)) if mpp == 0.5
         ));
+    }
+
+    #[test]
+    fn jpeg_quality_defaults_to_75_and_is_clamped() {
+        assert_eq!(ExtractionOptions::default().jpeg_quality, 75);
+        assert_eq!(ExtractionOptions::parallel().jpeg_quality, 75);
+        assert_eq!(
+            ExtractionOptions::default()
+                .with_jpeg_quality(95)
+                .jpeg_quality,
+            95
+        );
+        assert_eq!(
+            ExtractionOptions::default()
+                .with_jpeg_quality(0)
+                .jpeg_quality,
+            1
+        );
+        assert_eq!(
+            ExtractionOptions::default()
+                .with_jpeg_quality(200)
+                .jpeg_quality,
+            100
+        );
     }
 
     #[test]
