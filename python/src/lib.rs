@@ -137,7 +137,9 @@ fn build_options(
     }
     if let Some(quality) = jpeg_quality {
         if !(1..=100).contains(&quality) {
-            return Err(PyValueError::new_err("jpeg_quality must be between 1 and 100"));
+            return Err(PyValueError::new_err(
+                "jpeg_quality must be between 1 and 100",
+            ));
         }
         options = options.with_jpeg_quality(quality);
     }
