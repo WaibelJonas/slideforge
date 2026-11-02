@@ -6,6 +6,9 @@ use std::sync::Arc;
 
 use crate::logging::{DualObserver, ExtractionObserver};
 
+/// Default JPEG quality unless overwritten with [`ExtractionOptions::with_jpeg_quality`]
+pub const DEFAULT_JPEG_QUALITY: u8 = 75;
+
 /// Governs whether tiles are processed sequentially or concurrently across
 /// multiple threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -87,10 +90,6 @@ pub struct ExtractionOptions {
     /// `.tfrecord` outputs. Defaults to [`DEFAULT_JPEG_QUALITY`].
     pub jpeg_quality: u8,
 }
-
-/// JPEG quality used unless [`ExtractionOptions::with_jpeg_quality`]
-/// overrides it.
-pub const DEFAULT_JPEG_QUALITY: u8 = 75;
 
 impl Default for ExtractionOptions {
     fn default() -> Self {

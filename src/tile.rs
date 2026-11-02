@@ -21,9 +21,9 @@ use crate::Level;
 use crate::error::WsiError;
 use crate::filter::TissueMask;
 
-/// photometric interpretation.
+/// Photometric interpretation.
 ///
-/// This describes how image pixels should be interpreted.
+/// [`Photometric`] describes how image pixels should be interpreted
 /// and serves to determine the correct color transformation
 /// during JPEG decoding
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,7 +288,14 @@ impl Tile {
         )
     }
 
-    // Resizes the tile to the given `width` and `height` (bilinear).
+    /// Resizes the tile to the given `width` and `height`.
+    ///
+    /// # Arguments
+    /// * `width` - The image width to which to resize to.
+    /// * `height` - The image height to which to resize to.
+    ///
+    /// # Returns
+    /// The resized tile as a [`Tile`].
     pub fn resize(&self, width: u32, height: u32) -> Tile {
         Tile::new(
             resize_bilinear(&self.image, width, height),
@@ -307,8 +314,12 @@ impl Tile {
     }
 
     /// Encode the image data back to raw bytes at the given JPEG quality
-    /// (1-100). Grayscale tiles stay single-channel, everything else is
-    /// encoded as RGB.
+    ///
+    /// # Arguments
+    /// * `quality` - jpeg quality at which to encode the image data. Range: 1-100
+    ///
+    /// # Returns
+    /// A [`Result`] containing a vector of encoded image data on success or a [`WsiError`] on failure.
     pub fn encode_jpeg_with_quality(&self, quality: u8) -> Result<Vec<u8>, WsiError> {
         let width = u16::try_from(self.image.width()).map_err(|_| WsiError::UnsupportedFormat)?;
         let height = u16::try_from(self.image.height()).map_err(|_| WsiError::UnsupportedFormat)?;
@@ -328,14 +339,22 @@ impl Tile {
 }
 
 thread_local! {
-    // Reused across calls so its scratch buffers aren't reallocated per tile
+    // Declare a reusable Resizer instance for each thread.
     static RESIZER: RefCell<Resizer> = RefCell::new(Resizer::new());
 }
 
-/// Bilinear resize via `fast_image_resize` (SIMD), several times faster than
-/// `image`'s equivalent `FilterType::Triangle`. Grayscale images stay
-/// grayscale, everything else comes out as RGB. Falls back to `image` for
-/// sizes `fast_image_resize` rejects (i.e. zero-sized images).
+/// Bilinear resize via SIMD.
+///
+/// Fast resizing using the [fast_image_resize](https://github.com/Cykooz/fast_image_resize),
+/// several times faster than previous resizing methods using [image](https://crates.io/crates/image).
+///
+/// # Arguments
+/// * `image` - The image to resize.
+/// * `width` - The width to which to resize to.
+/// * `height` - The height to which to resize to.
+///
+/// # Returns
+/// The resized image as a [`DynamicImage`].
 fn resize_bilinear(image: &DynamicImage, width: u32, height: u32) -> DynamicImage {
     let (pixels, pixel_type) = match image {
         DynamicImage::ImageLuma8(gray) => (Cow::Borrowed(gray.as_raw()), PixelType::U8),

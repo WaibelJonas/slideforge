@@ -48,15 +48,31 @@ fn window_count(level_dim: u32, window_px: u32, stride_px: u32) -> u32 {
     (level_dim - window_px) / stride_px + 1
 }
 
-/// Truncates a size in (fractional) pixels to whole pixels, matching
-/// slideflow's `int(tile_um / mpp)`. The epsilon keeps a size that is
-/// meant to be exact (e.g. `n * mpp / mpp`) from flooring one pixel short
-/// due to float error. Never returns 0.
-fn whole_pixels(px: f64) -> u32 {
-    ((px + 1e-6).floor() as u32).max(1)
+/// Converts a fractional pixel size to a whole number of pixels by rounding
+/// down.
+///
+/// # Arguments
+/// * `pixel_fraction` - The size in fractional pixels.
+///
+/// # Returns
+/// The size in whole pixels, which is always at least 1.
+fn whole_pixels(pixel_fraction: f64) -> u32 {
+    ((pixel_fraction + 1e-6).floor() as u32).max(1)
 }
 
-/// Runs `job` on `pool`, or on the current (default) rayon pool if `None`.
+/// Runs a closure inside a specific rayon thread pool, if one is given.
+///
+/// Any rayon parallel iterators used inside `job` run on that pool. Blocks
+/// until `job` has finished.
+///
+/// # Arguments
+/// * `pool` - The thread pool to run on. `None` runs `job` directly on the
+///   calling thread, so its parallel work uses the current (by default the
+///   global) rayon pool.
+/// * `job` - The closure to run.
+///
+/// # Returns
+/// The value returned by `job`.
 fn install<T: Send>(pool: Option<&rayon::ThreadPool>, job: impl FnOnce() -> T + Send) -> T {
     match pool {
         Some(pool) => pool.install(job),
@@ -64,8 +80,18 @@ fn install<T: Send>(pool: Option<&rayon::ThreadPool>, job: impl FnOnce() -> T + 
     }
 }
 
-/// Copies the part of `tile` that overlaps `canvas` into it. Both origins
-/// are the images' top-left corners in the same (level) pixel space.
+/// Copies the overlapping pixels of one image onto another.
+///
+/// Both images are positioned in a shared pixel space (e.g. a pyramid
+/// level's), and only the area where they intersect is copied, row by row.
+/// Pixels of `canvas` outside that area are left untouched, and nothing is
+/// copied if the images don't intersect.
+///
+/// # Arguments
+/// * `canvas` - The image to copy into.
+/// * `canvas_origin` - The `(x, y)` position of `canvas`'s top-left corner.
+/// * `tile` - The image to copy from.
+/// * `tile_origin` - The `(x, y)` position of `tile`'s top-left corner.
 fn blit(
     canvas: &mut RgbImage,
     canvas_origin: (u32, u32),
@@ -93,22 +119,41 @@ fn blit(
     }
 }
 
-/// The lowest-resolution pyramid level in grayscale, used as a
-/// low-resolution tissue mask for the extraction level.
+/// A low-resolution tissue mask for a slide.
+///
+/// Holds the lowest-resolution pyramid level in grayscale, along with a
+/// tissue threshold derived from it. This allows estimating how much tissue
+/// a region of a higher-resolution level contains without reading that
+/// level at all.
 struct TissueOverview {
+    /// The lowest-resolution pyramid level, in grayscale.
     gray: GrayImage,
-    /// Otsu threshold derived from the whole overview
+    /// Otsu threshold derived from the whole overview. Pixels at or below
+    /// it count as tissue.
     threshold: u8,
-    /// Overview pixels per extraction-level pixel, per axis
+    /// Horizontal overview pixels per pixel of the level being classified.
     scale_x: f64,
+    /// Vertical overview pixels per pixel of the level being classified.
     scale_y: f64,
 }
 
 impl TissueOverview {
-    /// Fraction of tissue (at or below `threshold`) in the overview pixels
-    /// covering the given extraction-level rectangle. Partially covered
-    /// overview pixels count fully, and a rectangle always covers at least
-    /// one pixel.
+    /// Estimates the tissue fraction of a rectangle from the overview.
+    ///
+    /// The rectangle is given in the pixel space of the level being
+    /// classified, and mapped onto the overview. Partially covered overview
+    /// pixels count fully, and a rectangle always covers at least one
+    /// overview pixel, so the estimate gets coarser for smaller rectangles.
+    ///
+    /// # Arguments
+    /// * `x` - The x-coordinate of the rectangle's top-left corner.
+    /// * `y` - The y-coordinate of the rectangle's top-left corner.
+    /// * `width` - The width of the rectangle, in pixels.
+    /// * `height` - The height of the rectangle, in pixels.
+    ///
+    /// # Returns
+    /// The fraction of covered overview pixels that are tissue, from 0 to 1.
+    /// An empty overview returns 1, so that nothing is dropped based on it.
     fn tissue_fraction(&self, x: u32, y: u32, width: u32, height: u32) -> f32 {
         let (gray_w, gray_h) = self.gray.dimensions();
         if gray_w == 0 || gray_h == 0 {
@@ -432,9 +477,24 @@ impl Slide {
         Ok(DynamicImage::ImageRgb8(canvas))
     }
 
-    /// Decodes a native tile as RGB, cropped to its valid (non-padding)
-    /// area. `concurrent` picks the positional-read path, which is safe to
-    /// call from several threads at once.
+    /// Reads and decodes a native tile as an RGB image, without padding.
+    ///
+    /// # Arguments
+    /// * `level_idx` - The index of the pyramid level.
+    /// * `tile_x` - The x-coordinate of the tile.
+    /// * `tile_y` - The y-coordinate of the tile.
+    /// * `concurrent` - Whether to read with positional reads, which suit
+    ///   concurrent calls from several threads, rather than through the
+    ///   shared buffered reader, which suits sequential reads in storage
+    ///   order.
+    ///
+    /// # Returns
+    /// A [`Result`] containing the decoded [`RgbImage`] on success, or a
+    /// [`WsiError`] on failure.
+    ///
+    /// # Errors
+    /// Returns [`WsiError`] if the level or tile coordinates are invalid, or
+    /// if the tile cannot be read or decoded.
     fn decode_tile_rgb(
         &self,
         level_idx: usize,
@@ -450,16 +510,34 @@ impl Slide {
         Ok(self.cropped_image(level_idx, &tile)?.to_rgb8())
     }
 
-    /// Cuts every [`TileGeometry::Grid`] window kept by `keep` out of the
-    /// level and passes it to `process`, at window size (not yet resized to
-    /// `params.tile_px`).
+    /// Cuts the windows of a [`TileGeometry::Grid`] out of a pyramid level.
     ///
     /// Windows are handled one row at a time: every native tile the row's
     /// kept windows overlap is decoded exactly once and cached until no
     /// later row needs it, instead of each window decoding its own
-    /// overlapping tiles (with 256px native tiles and ~300px windows,
-    /// that's ~4.7 decodes per window, each native tile decoded ~3 times).
-    /// The cache holds at most the native rows one window row spans.
+    /// overlapping tiles. Since neighboring windows usually share native
+    /// tiles, this avoids decoding the same tile several times. The cache
+    /// holds at most the native rows that one window row spans.
+    ///
+    /// # Arguments
+    /// * `level_idx` - The index of the pyramid level.
+    /// * `params` - The window and stride sizes, in pixels of this level.
+    /// * `cols` - The number of windows per row.
+    /// * `rows` - The number of window rows.
+    /// * `parallel` - Whether to decode tiles and process windows
+    ///   concurrently on the current rayon pool.
+    /// * `keep` - Called with `(col, row)` for each window. Windows it returns
+    ///   `false` for are skipped without reading anything for them.
+    /// * `process` - Called with each kept window as a [`Tile`], at window
+    ///   size (i.e. not yet resized to `params.tile_px`).
+    ///
+    /// # Returns
+    /// A [`Result`] containing `()` once all windows have been processed, or
+    /// a [`WsiError`] on failure.
+    ///
+    /// # Errors
+    /// Returns [`WsiError`] if the level is invalid, if a native tile cannot
+    /// be read or decoded, or if `process` fails.
     #[allow(clippy::too_many_arguments)]
     fn extract_grid<K, P>(
         &self,
@@ -619,8 +697,19 @@ impl Slide {
         }
     }
 
-    /// Stitches the lowest-resolution pyramid level into a single image,
-    /// decoding its tiles on the current rayon pool when `parallel`.
+    /// Stitches the lowest-resolution pyramid level into a single image.
+    ///
+    /// # Arguments
+    /// * `parallel` - Whether to decode the level's tiles concurrently on the
+    ///   current rayon pool.
+    ///
+    /// # Returns
+    /// A [`Result`] containing the stitched [`RgbImage`] on success, or a
+    /// [`WsiError`] on failure.
+    ///
+    /// # Errors
+    /// Returns [`WsiError`] if one of the level's tiles cannot be read or
+    /// decoded.
     fn lowest_level_image(&self, parallel: bool) -> Result<RgbImage, WsiError> {
         let level_idx = self.level_count() - 1;
         let level = self
@@ -653,15 +742,29 @@ impl Slide {
         Ok(canvas)
     }
 
-    /// Builds a [`TissueOverview`] of the lowest-resolution pyramid level
-    /// for classifying regions of `level_idx`.
+    /// Builds a [`TissueOverview`] for classifying regions of a pyramid level.
     ///
-    /// Its single Otsu threshold comes from the aggregated grayscale
-    /// histogram of the whole level. Tiles are classified against this
+    /// Its single Otsu threshold comes from the grayscale histogram of the
+    /// whole lowest-resolution level. Tiles are classified against this
     /// shared reference point instead of each deriving its own threshold in
     /// isolation, which would let Otsu invent a spurious tissue/background
     /// split on a tile that is actually uniform background (or uniform
     /// tissue).
+    ///
+    /// # Arguments
+    /// * `level_idx` - The index of the pyramid level whose regions will be
+    ///   classified, which determines the overview's scale.
+    /// * `parallel` - Whether to decode the lowest-resolution level
+    ///   concurrently on the current rayon pool.
+    ///
+    /// # Returns
+    /// A [`Result`] containing the [`TissueOverview`] on success, or a
+    /// [`WsiError`] on failure.
+    ///
+    /// # Errors
+    /// Returns [`WsiError::LevelIndexOutOfBounds`] if the specified level
+    /// index is invalid, or another [`WsiError`] if the lowest-resolution
+    /// level cannot be read or decoded.
     fn tissue_overview(
         &self,
         level_idx: usize,

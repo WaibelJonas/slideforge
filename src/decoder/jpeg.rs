@@ -70,8 +70,7 @@ impl JpegDecoder {
             (ColorSpace::Luma, _) => ColorSpace::Luma,
             // Without a marker saying otherwise, a 3-component JPEG is assumed
             // to be YCbCr. When the TIFF says the stream really holds RGB (as
-            // in Aperio SVS), "keeping" YCbCr returns the stored components
-            // untouched -- i.e. the RGB values, with no conversion applied.
+            // in Aperio SVS), "keeping" YCbCr returns the stored components untouched
             (ColorSpace::YCbCr, Photometric::RGB) => ColorSpace::YCbCr,
             _ => ColorSpace::RGB,
         };
