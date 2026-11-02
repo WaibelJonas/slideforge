@@ -63,6 +63,9 @@ pub struct PipelineArgs {
     /// Apply Reinhard stain normalization to kept tiles
     #[arg(long)]
     pub stain_normalize: bool,
+    /// JPEG quality (1-100) for .jpg and .tfrecord tiles (default: 75)
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+    pub jpeg_quality: Option<u8>,
     /// Suppress the progress bar
     #[arg(long, short = 'q')]
     pub quiet: bool,
@@ -89,6 +92,9 @@ impl PipelineArgs {
         }
         if self.stain_normalize {
             options = options.with_stain_normalization();
+        }
+        if let Some(quality) = self.jpeg_quality {
+            options = options.with_jpeg_quality(quality);
         }
         if !self.quiet {
             options = options.with_progress_bar();

@@ -4,7 +4,12 @@
 //! compression metadata for all tiles within a tiled TIFF image. It also
 //! contains utilities for reading compressed tile data directly from disk.
 
-use image::DynamicImage;
+use fast_image_resize::images::{Image, ImageRef};
+use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
+use image::{DynamicImage, GrayImage, RgbImage};
+use jpeg_encoder::{ColorType, Encoder};
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::Path;
@@ -16,9 +21,9 @@ use crate::Level;
 use crate::error::WsiError;
 use crate::filter::TissueMask;
 
-/// photometric interpretation.
+/// Photometric interpretation.
 ///
-/// This describes how image pixels should be interpreted.
+/// [`Photometric`] describes how image pixels should be interpreted
 /// and serves to determine the correct color transformation
 /// during JPEG decoding
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,20 +36,6 @@ pub enum Photometric {
     CMYK,
     YCbCr,
     CIELab,
-}
-
-impl Photometric {
-    /// Returns the JPEG color transform corresponding to this
-    /// photometric interpretation.
-    pub fn jpeg_color_transform(self) -> jpeg_decoder::ColorTransform {
-        match self {
-            Self::RGB => jpeg_decoder::ColorTransform::RGB,
-            Self::YCbCr => jpeg_decoder::ColorTransform::YCbCr,
-
-            // Fallback is RGB (honestly couldnt be bothered to exhaust this match)
-            _ => jpeg_decoder::ColorTransform::RGB,
-        }
-    }
 }
 
 /// Helper function to convert from [`tiff::tags::Tag::PhotometricInterpretation`]
@@ -297,11 +288,17 @@ impl Tile {
         )
     }
 
-    // Resizes the tile to the given `width` and `height`.
+    /// Resizes the tile to the given `width` and `height`.
+    ///
+    /// # Arguments
+    /// * `width` - The image width to which to resize to.
+    /// * `height` - The image height to which to resize to.
+    ///
+    /// # Returns
+    /// The resized tile as a [`Tile`].
     pub fn resize(&self, width: u32, height: u32) -> Tile {
         Tile::new(
-            self.image
-                .resize_exact(width, height, image::imageops::FilterType::Triangle),
+            resize_bilinear(&self.image, width, height),
             self.level,
             self.tile_x,
             self.tile_y,
@@ -310,17 +307,79 @@ impl Tile {
         )
     }
 
-    /// Encode the image data back to raw bytes.
+    /// Encode the image data back to raw bytes, at
+    /// [`DEFAULT_JPEG_QUALITY`](crate::extraction::DEFAULT_JPEG_QUALITY).
     pub fn encode_jpeg(&self) -> Result<Vec<u8>, WsiError> {
+        self.encode_jpeg_with_quality(crate::extraction::DEFAULT_JPEG_QUALITY)
+    }
+
+    /// Encode the image data back to raw bytes at the given JPEG quality
+    ///
+    /// # Arguments
+    /// * `quality` - jpeg quality at which to encode the image data. Range: 1-100
+    ///
+    /// # Returns
+    /// A [`Result`] containing a vector of encoded image data on success or a [`WsiError`] on failure.
+    pub fn encode_jpeg_with_quality(&self, quality: u8) -> Result<Vec<u8>, WsiError> {
+        let width = u16::try_from(self.image.width()).map_err(|_| WsiError::UnsupportedFormat)?;
+        let height = u16::try_from(self.image.height()).map_err(|_| WsiError::UnsupportedFormat)?;
+
+        let (pixels, color_type) = match &self.image {
+            DynamicImage::ImageLuma8(gray) => (Cow::Borrowed(gray.as_raw()), ColorType::Luma),
+            DynamicImage::ImageRgb8(rgb) => (Cow::Borrowed(rgb.as_raw()), ColorType::Rgb),
+            other => (Cow::Owned(other.to_rgb8().into_raw()), ColorType::Rgb),
+        };
+
         let mut buf = Vec::new();
-        self.image
-            .write_to(
-                &mut std::io::Cursor::new(&mut buf),
-                image::ImageFormat::Jpeg,
-            )
+        Encoder::new(&mut buf, quality.clamp(1, 100))
+            .encode(&pixels, width, height, color_type)
             .map_err(|_| WsiError::UnsupportedFormat)?;
         Ok(buf)
     }
+}
+
+thread_local! {
+    // Declare a reusable Resizer instance for each thread.
+    static RESIZER: RefCell<Resizer> = RefCell::new(Resizer::new());
+}
+
+/// Bilinear resize via SIMD.
+///
+/// Fast resizing using the [fast_image_resize](https://github.com/Cykooz/fast_image_resize),
+/// several times faster than previous resizing methods using [image](https://crates.io/crates/image).
+///
+/// # Arguments
+/// * `image` - The image to resize.
+/// * `width` - The width to which to resize to.
+/// * `height` - The height to which to resize to.
+///
+/// # Returns
+/// The resized image as a [`DynamicImage`].
+fn resize_bilinear(image: &DynamicImage, width: u32, height: u32) -> DynamicImage {
+    let (pixels, pixel_type) = match image {
+        DynamicImage::ImageLuma8(gray) => (Cow::Borrowed(gray.as_raw()), PixelType::U8),
+        DynamicImage::ImageRgb8(rgb) => (Cow::Borrowed(rgb.as_raw()), PixelType::U8x3),
+        other => (Cow::Owned(other.to_rgb8().into_raw()), PixelType::U8x3),
+    };
+    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear));
+
+    let resized = ImageRef::new(image.width(), image.height(), &pixels, pixel_type)
+        .ok()
+        .and_then(|src| {
+            let mut dst = Image::new(width, height, pixel_type);
+            RESIZER
+                .with_borrow_mut(|resizer| resizer.resize(&src, &mut dst, &options))
+                .ok()?;
+            match pixel_type {
+                PixelType::U8 => {
+                    GrayImage::from_raw(width, height, dst.into_vec()).map(DynamicImage::ImageLuma8)
+                }
+                _ => RgbImage::from_raw(width, height, dst.into_vec()).map(DynamicImage::ImageRgb8),
+            }
+        });
+
+    resized
+        .unwrap_or_else(|| image.resize_exact(width, height, image::imageops::FilterType::Triangle))
 }
 
 /// Reads a list of values from a TIFF tag, extracting each element via `extract`.

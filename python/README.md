@@ -38,13 +38,15 @@ for tile_x, tile_y, array in tiles:
 ```
 
 `extract` and `extract_arrays` each require exactly one of `level` (a specific pyramid level
-index) or `target_mpp` (a target microns-per-pixel resolution).
+index) or `target_mpp` (a target microns-per-pixel resolution). `extract` also takes
+`jpeg_quality` (1-100, default 75) for the tiles it writes.
 
 ### Grid mode
 
 By default tiles come from the slide's native tile grid. Passing `tile_px` and `tile_um` together
 switches to fixed-size windows on a regular grid defined in physical units, independent of the
-native tile grid -- matching the tiling convention used by tools like slideflow:
+native tile grid -- matching the tiling convention used by tools like slideflow (including
+truncating the window to `int(tile_um / mpp)` pixels):
 
 ```python
 tiles = slideforge.extract_arrays(
