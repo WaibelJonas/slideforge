@@ -116,3 +116,40 @@ def test_grid_mode_resizes_output_to_tile_px(fixture_path):
 def test_grid_params_must_be_given_together(fixture_path, kwargs):
     with pytest.raises(ValueError):
         slideforge.extract(fixture_path, level=0, **kwargs)
+
+
+@pytest.mark.parametrize("chroma_subsampling", ["4:4:4", "4:2:2", "4:2:0", "420"])
+def test_extract_accepts_chroma_subsampling(fixture_path, tmp_path, chroma_subsampling):
+    tfrecord_path = tmp_path / "out.tfrecord"
+
+    _kept, total = slideforge.extract(
+        fixture_path,
+        tfrecord=str(tfrecord_path),
+        level=0,
+        jpeg_quality=95,
+        chroma_subsampling=chroma_subsampling,
+    )
+
+    assert total == 130
+    assert tfrecord_path.stat().st_size > 0
+
+
+def test_extract_rejects_invalid_chroma_subsampling(fixture_path):
+    with pytest.raises(ValueError, match="4:2:0"):
+        slideforge.extract(fixture_path, level=0, chroma_subsampling="4:1:1")
+
+
+def test_chroma_subsampling_420_writes_smaller_tfrecords_than_444(fixture_path, tmp_path):
+    sizes = {}
+    for chroma_subsampling in ("4:4:4", "4:2:0"):
+        tfrecord_path = tmp_path / f"{chroma_subsampling.replace(':', '')}.tfrecord"
+        slideforge.extract(
+            fixture_path,
+            tfrecord=str(tfrecord_path),
+            level=0,
+            jpeg_quality=95,
+            chroma_subsampling=chroma_subsampling,
+        )
+        sizes[chroma_subsampling] = tfrecord_path.stat().st_size
+
+    assert sizes["4:2:0"] < sizes["4:4:4"]

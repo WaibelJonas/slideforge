@@ -14,7 +14,7 @@ use printpdf::{
 };
 
 use crate::error::WsiError;
-use crate::extraction::{ExtractionOptions, Parallelism};
+use crate::extraction::{ChromaSubsampling, ExtractionOptions, Parallelism};
 use crate::slide::Slide;
 
 /// Liberation Sans (SIL OFL 1.1, metric-compatible with Arial). For more information, see `assets/fonts/LICENSE`
@@ -60,6 +60,7 @@ struct OptionsSummary {
     min_tissue_fraction: Option<f32>,
     normalize_stain: bool,
     jpeg_quality: u8,
+    chroma_subsampling: ChromaSubsampling,
 }
 
 impl From<&ExtractionOptions> for OptionsSummary {
@@ -69,6 +70,7 @@ impl From<&ExtractionOptions> for OptionsSummary {
             min_tissue_fraction: options.min_tissue_fraction,
             normalize_stain: options.normalize_stain,
             jpeg_quality: options.jpeg_quality,
+            chroma_subsampling: options.chroma_subsampling,
         }
     }
 }
@@ -305,6 +307,7 @@ impl ExtractionReport {
                 }
             ),
             format!("JPEG quality: {}", self.options.jpeg_quality),
+            format!("Chroma subsampling: {}", self.options.chroma_subsampling),
         ];
         for line in &pipeline_lines {
             push_text(ops, font, 10.0, left_x, left_y, line);
@@ -816,6 +819,7 @@ impl DatasetReport {
                 }
             ),
             format!("JPEG quality: {}", self.options.jpeg_quality),
+            format!("Chroma subsampling: {}", self.options.chroma_subsampling),
         ];
         for line in &pipeline_lines {
             push_text(&mut ops, font, 10.0, left_x, left_y, line);

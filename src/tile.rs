@@ -7,7 +7,7 @@
 use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::{DynamicImage, GrayImage, RgbImage};
-use jpeg_encoder::{ColorType, Encoder};
+use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fs::File;
@@ -17,9 +17,18 @@ use tiff::decoder::Decoder;
 use tiff::decoder::ifd::Value;
 use tiff::tags::Tag;
 
-use crate::Level;
 use crate::error::WsiError;
 use crate::filter::TissueMask;
+use crate::{ChromaSubsampling, Level};
+
+/// Maps a [`ChromaSubsampling`] to jpeg-encoder's equivalent sampling factor.
+fn sampling_factor(chroma_subsampling: ChromaSubsampling) -> SamplingFactor {
+    match chroma_subsampling {
+        ChromaSubsampling::Cs444 => SamplingFactor::F_1_1,
+        ChromaSubsampling::Cs422 => SamplingFactor::F_2_1,
+        ChromaSubsampling::Cs420 => SamplingFactor::F_2_2,
+    }
+}
 
 /// Photometric interpretation.
 ///
@@ -310,7 +319,10 @@ impl Tile {
     /// Encode the image data back to raw bytes, at
     /// [`DEFAULT_JPEG_QUALITY`](crate::extraction::DEFAULT_JPEG_QUALITY).
     pub fn encode_jpeg(&self) -> Result<Vec<u8>, WsiError> {
-        self.encode_jpeg_with_quality(crate::extraction::DEFAULT_JPEG_QUALITY)
+        self.encode_jpeg_with(
+            crate::extraction::DEFAULT_JPEG_QUALITY,
+            ChromaSubsampling::default(),
+        )
     }
 
     /// Encode the image data back to raw bytes at the given JPEG quality
@@ -321,6 +333,22 @@ impl Tile {
     /// # Returns
     /// A [`Result`] containing a vector of encoded image data on success or a [`WsiError`] on failure.
     pub fn encode_jpeg_with_quality(&self, quality: u8) -> Result<Vec<u8>, WsiError> {
+        self.encode_jpeg_with(quality, ChromaSubsampling::default())
+    }
+
+    /// Encode the image data back to raw bytes at the given JPEG quality and chroma subsampling factor.
+    ///
+    /// # Arguments
+    /// * `quality` - jpeg quality at which to encode the image data. Range: 1-100
+    /// * `chroma_subsampling` - Chroma subsampling factor to use in encoding
+    ///
+    /// # Returns
+    /// A [`Result`] containing a vector of encoded image data on success or a [`WsiError`] on failure.
+    pub fn encode_jpeg_with(
+        &self,
+        quality: u8,
+        chroma_subsampling: ChromaSubsampling,
+    ) -> Result<Vec<u8>, WsiError> {
         let width = u16::try_from(self.image.width()).map_err(|_| WsiError::UnsupportedFormat)?;
         let height = u16::try_from(self.image.height()).map_err(|_| WsiError::UnsupportedFormat)?;
 
@@ -331,7 +359,9 @@ impl Tile {
         };
 
         let mut buf = Vec::new();
-        Encoder::new(&mut buf, quality.clamp(1, 100))
+        let mut encoder = Encoder::new(&mut buf, quality.clamp(1, 100));
+        encoder.set_sampling_factor(sampling_factor(chroma_subsampling));
+        encoder
             .encode(&pixels, width, height, color_type)
             .map_err(|_| WsiError::UnsupportedFormat)?;
         Ok(buf)
@@ -472,4 +502,90 @@ pub fn read_tile_bytes_at(file: &File, offset: u64, byte_count: u64) -> Result<V
     }
 
     Ok(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Per-component (horizontal, vertical) sampling factors from the
+    // encoded JPEG's start-of-frame header
+    fn frame_sampling_factors(jpeg: &[u8]) -> Vec<(u8, u8)> {
+        let mut i = 2; // past SOI
+        loop {
+            assert_eq!(jpeg[i], 0xFF, "expected a marker at byte {i}");
+            let marker = jpeg[i + 1];
+            let len = u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]) as usize;
+            if (0xC0..=0xC2).contains(&marker) {
+                let components = jpeg[i + 9] as usize;
+                return (0..components)
+                    .map(|c| {
+                        let factors = jpeg[i + 11 + 3 * c];
+                        (factors >> 4, factors & 0x0F)
+                    })
+                    .collect();
+            }
+            i += 2 + len;
+        }
+    }
+
+    fn sample_tile(image: DynamicImage) -> Tile {
+        Tile::new(image, 0, 0, 0, 0, 0)
+    }
+
+    fn rgb_tile() -> Tile {
+        sample_tile(DynamicImage::ImageRgb8(RgbImage::from_fn(
+            64,
+            48,
+            |x, y| image::Rgb([(x * 4) as u8, (y * 5) as u8, 128]),
+        )))
+    }
+
+    #[test]
+    fn encode_jpeg_with_writes_the_requested_chroma_subsampling() {
+        let tile = rgb_tile();
+        for (subsampling, luma) in [
+            (ChromaSubsampling::Cs444, (1, 1)),
+            (ChromaSubsampling::Cs422, (2, 1)),
+            (ChromaSubsampling::Cs420, (2, 2)),
+        ] {
+            for quality in [75, 95] {
+                let jpeg = tile.encode_jpeg_with(quality, subsampling).unwrap();
+                assert_eq!(
+                    frame_sampling_factors(&jpeg),
+                    vec![luma, (1, 1), (1, 1)],
+                    "{subsampling} at quality {quality}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_encoding_is_420_at_any_quality() {
+        let tile = rgb_tile();
+        for jpeg in [
+            tile.encode_jpeg().unwrap(),
+            tile.encode_jpeg_with_quality(75).unwrap(),
+            tile.encode_jpeg_with_quality(95).unwrap(),
+        ] {
+            assert_eq!(frame_sampling_factors(&jpeg), vec![(2, 2), (1, 1), (1, 1)]);
+        }
+    }
+
+    #[test]
+    fn grayscale_tiles_encode_with_any_chroma_subsampling() {
+        let tile = sample_tile(DynamicImage::ImageLuma8(GrayImage::from_fn(
+            64,
+            48,
+            |x, y| image::Luma([(x + y) as u8]),
+        )));
+        for subsampling in [
+            ChromaSubsampling::Cs444,
+            ChromaSubsampling::Cs422,
+            ChromaSubsampling::Cs420,
+        ] {
+            let jpeg = tile.encode_jpeg_with(95, subsampling).unwrap();
+            assert_eq!(frame_sampling_factors(&jpeg), vec![(1, 1)]);
+        }
+    }
 }
