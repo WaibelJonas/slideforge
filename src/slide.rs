@@ -1028,7 +1028,7 @@ impl Slide {
 
             // Encoded once, shared by both file outputs
             let jpeg = if outputs.tile_dir.is_some() || tfrecord_writer.is_some() {
-                Some(tile.encode_jpeg_with_quality(options.jpeg_quality)?)
+                Some(tile.encode_jpeg_with(options.jpeg_quality, options.chroma_subsampling)?)
             } else {
                 None
             };

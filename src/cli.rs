@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use slideforge::ExtractionOptions;
+use slideforge::{ChromaSubsampling, ExtractionOptions};
 
 #[derive(Parser)]
 #[command(
@@ -66,6 +66,9 @@ pub struct PipelineArgs {
     /// JPEG quality (1-100) for .jpg and .tfrecord tiles (default: 75)
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
     pub jpeg_quality: Option<u8>,
+    #[arg(long)]
+    /// Chroma subsampling factor. Possible options are: 4:4:4, 4:2:2 or 4:2:0
+    pub chroma_subsampling: Option<ChromaSubsampling>,
     /// Suppress the progress bar
     #[arg(long, short = 'q')]
     pub quiet: bool,
@@ -95,6 +98,9 @@ impl PipelineArgs {
         }
         if let Some(quality) = self.jpeg_quality {
             options = options.with_jpeg_quality(quality);
+        }
+        if let Some(chroma_subsampling) = self.chroma_subsampling {
+            options = options.with_chroma_subsampling(chroma_subsampling);
         }
         if !self.quiet {
             options = options.with_progress_bar();

@@ -1,8 +1,8 @@
 //! Extraction options controlling how tiles are decoded and processed during
 //! extraction.
 
-use std::fmt;
 use std::sync::Arc;
+use std::{fmt, str::FromStr};
 
 use crate::logging::{DualObserver, ExtractionObserver};
 
@@ -34,6 +34,53 @@ pub enum ExtractionLevel {
     /// is then chosen, then tiles are resized to match
     /// the per pixel resolution
     TargetMpp(f64),
+}
+
+// Governs the Chroma subsampling factor to be used in JPEG encoding
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChromaSubsampling {
+    /// Factor 4:4:4, no resolution difference between Luma and Chroma
+    Cs444,
+    /// Factor 4:2:2, Chroma reduced to half horizontally
+    Cs422,
+    /// Factor 4:2:0, Chroma reduced to hald horizontally and vertically | Default
+    #[default]
+    Cs420,
+}
+
+impl FromStr for ChromaSubsampling {
+    type Err = String;
+
+    /// Parse a [`ChromaSubsampling`] instance from a given string
+    ///
+    /// Given a str representing a subsampling factor (e.g. "4:4:4" or "444"),
+    /// this method returns the corresponding [`ChromaSubsampling`] instance.
+    ///
+    /// # Arguments
+    /// * `s` - String literal from which to parse a [`ChromaSubsampling`] instance from.
+    ///
+    /// # Returns
+    /// The corresponding [`ChromaSubsampling`] instance if successfull, or a String Error if not.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "4:4:4" | "444" => Ok(Self::Cs444),
+            "4:2:2" | "422" => Ok(Self::Cs422),
+            "4:2:0" | "420" => Ok(Self::Cs420),
+            _ => Err(format!(
+                "invalid chroma subsampling {s:?}, expected 4:4:4, 4:2:2 or 4:2:0"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for ChromaSubsampling {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Cs444 => "4:4:4",
+            Self::Cs422 => "4:2:2",
+            Self::Cs420 => "4:2:0",
+        })
+    }
 }
 
 /// Governs how tiles are laid out and read from a slide
@@ -89,6 +136,8 @@ pub struct ExtractionOptions {
     /// JPEG quality (1-100) tiles are encoded with for loose `.jpg` and
     /// `.tfrecord` outputs. Defaults to [`DEFAULT_JPEG_QUALITY`].
     pub jpeg_quality: u8,
+    // The chroma subsampling factor to be used in JPEG encoding
+    pub chroma_subsampling: ChromaSubsampling,
 }
 
 impl Default for ExtractionOptions {
@@ -122,6 +171,7 @@ impl ExtractionOptions {
             extraction_level: None,
             geometry: TileGeometry::default(),
             jpeg_quality: DEFAULT_JPEG_QUALITY,
+            chroma_subsampling: ChromaSubsampling::default(),
         }
     }
 
@@ -135,6 +185,7 @@ impl ExtractionOptions {
             extraction_level: None,
             geometry: TileGeometry::default(),
             jpeg_quality: DEFAULT_JPEG_QUALITY,
+            chroma_subsampling: ChromaSubsampling::default(),
         }
     }
 
@@ -152,6 +203,7 @@ impl ExtractionOptions {
             extraction_level: None,
             geometry: TileGeometry::default(),
             jpeg_quality: DEFAULT_JPEG_QUALITY,
+            chroma_subsampling: ChromaSubsampling::default(),
         }
     }
 
@@ -228,6 +280,15 @@ impl ExtractionOptions {
     /// * `quality` - The JPEG quality, 1 (smallest) to 100 (best).
     pub fn with_jpeg_quality(mut self, quality: u8) -> Self {
         self.jpeg_quality = quality.clamp(1, 100);
+        self
+    }
+
+    /// Encodes `.jpg`/`.tfrecord` tiles with the given chroma subsampling.
+    ///
+    /// # Arguments
+    /// * `chroma_subsampling` - The chroma subsampling to encode tiles with.
+    pub fn with_chroma_subsampling(mut self, chroma_subsampling: ChromaSubsampling) -> Self {
+        self.chroma_subsampling = chroma_subsampling;
         self
     }
 
@@ -332,5 +393,29 @@ mod tests {
 
         assert_eq!(first.0.load(Ordering::Relaxed), 1);
         assert_eq!(second.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn chroma_subsampling_defaults_to_420() {
+        assert_eq!(
+            ExtractionOptions::default().chroma_subsampling,
+            ChromaSubsampling::Cs420
+        );
+        assert_eq!(
+            ExtractionOptions::parallel_with_threads(2).chroma_subsampling,
+            ChromaSubsampling::Cs420
+        );
+    }
+
+    #[test]
+    fn chroma_subsampling_round_trips_through_display() {
+        for cs in [
+            ChromaSubsampling::Cs444,
+            ChromaSubsampling::Cs422,
+            ChromaSubsampling::Cs420,
+        ] {
+            assert_eq!(cs.to_string().parse::<ChromaSubsampling>(), Ok(cs));
+        }
+        assert!("4::2:0".parse::<ChromaSubsampling>().is_err());
     }
 }

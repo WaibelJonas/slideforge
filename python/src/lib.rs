@@ -21,7 +21,7 @@ use pyo3::prelude::*;
 
 use ::slideforge::error::WsiError;
 use ::slideforge::slide::{Slide, SlideOutputs};
-use ::slideforge::{ExtractionObserver, ExtractionOptions};
+use ::slideforge::{ChromaSubsampling, ExtractionObserver, ExtractionOptions};
 
 /// `(width, height, downsample_factor)` per pyramid level.
 type LevelInfo = (u32, u32, f64);
@@ -109,6 +109,7 @@ fn build_options(
     tile_um: Option<f64>,
     stride_um: Option<f64>,
     jpeg_quality: Option<u8>,
+    chroma_subsampling: Option<String>,
 ) -> PyResult<ExtractionOptions> {
     let mut options = match (level, target_mpp) {
         (Some(_), Some(_)) => {
@@ -142,6 +143,12 @@ fn build_options(
             ));
         }
         options = options.with_jpeg_quality(quality);
+    }
+    if let Some(chroma_subsampling) = chroma_subsampling {
+        let chroma_subsampling = chroma_subsampling
+            .parse::<ChromaSubsampling>()
+            .map_err(PyValueError::new_err)?;
+        options = options.with_chroma_subsampling(chroma_subsampling);
     }
 
     match (tile_px, tile_um) {
@@ -194,6 +201,7 @@ fn build_options(
     tile_um=None,
     stride_um=None,
     jpeg_quality=None,
+    chroma_subsampling=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn extract(
@@ -210,6 +218,7 @@ fn extract(
     tile_um: Option<f64>,
     stride_um: Option<f64>,
     jpeg_quality: Option<u8>,
+    chroma_subsampling: Option<String>,
 ) -> PyResult<(usize, usize)> {
     py.detach(move || {
         let slide = Slide::open(&path).map_err(to_pyerr)?;
@@ -223,6 +232,7 @@ fn extract(
             tile_um,
             stride_um,
             jpeg_quality,
+            chroma_subsampling,
         )?;
 
         let counter = Arc::new(CountingObserver::default());
@@ -290,6 +300,7 @@ fn extract_arrays<'py>(
             tile_px,
             tile_um,
             stride_um,
+            None,
             None,
         )?;
 
