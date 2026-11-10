@@ -38,8 +38,28 @@ for tile_x, tile_y, array in tiles:
 ```
 
 `extract` and `extract_arrays` each require exactly one of `level` (a specific pyramid level
-index) or `target_mpp` (a target microns-per-pixel resolution). `extract` also takes
-`jpeg_quality` (1-100, default 75) for the tiles it writes.
+index) or `target_mpp` (a target microns-per-pixel resolution).
+
+`extract` also controls how the tiles it writes are JPEG-encoded:
+
+- `jpeg_quality`: 1-100, default 75.
+- `chroma_subsampling`: `"4:4:4"`, `"4:2:2"` or `"4:2:0"` (also `"444"`, `"422"`, `"420"`),
+  default `"4:2:0"`, which matches Pillow and therefore slideflow at any quality. Any other value
+  raises `ValueError`.
+
+```python
+kept, total = slideforge.extract(
+    "slide.svs",
+    tfrecord="slide.tfrecord",
+    target_mpp=0.5,
+    jpeg_quality=95,
+    chroma_subsampling="4:4:4",  # full color resolution, roughly a third larger files
+)
+```
+
+`min_tissue_fraction` keeps only tiles with at least that share of tissue pixels, using a single
+Otsu threshold derived from the slide's lowest-resolution level. Tiles that are background on that
+overview are dropped before their full-resolution data is read.
 
 ### Grid mode
 
